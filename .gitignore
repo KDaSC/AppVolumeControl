@@ -1,0 +1,7 @@
+.build/
+outputs/*.app/
+outputs/*.zip
+outputs/*.sha256
+outputs/.DS_Store
+.DS_Store
+
