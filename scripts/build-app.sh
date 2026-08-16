@@ -8,19 +8,33 @@ APP_DIR="$OUTPUT_DIR/AppVolumeControl.app"
 ARCHIVE_PATH="$OUTPUT_DIR/AppVolumeControl.zip"
 CHECKSUM_PATH="$ARCHIVE_PATH.sha256"
 SIGNING_IDENTITY="${APP_VOLUME_SIGNING_IDENTITY:-}"
-VERSION="0.5.1"
-BUILD_NUMBER="6"
+VERSION="0.6.0"
+BUILD_NUMBER="7"
 STAGING_DIR="$(mktemp -d)"
 STAGED_APP_DIR="$STAGING_DIR/AppVolumeControl.app"
-trap 'rm -rf "$STAGING_DIR"' EXIT
+VERIFY_DIR=""
+
+cleanup() {
+	if [[ -n "$VERIFY_DIR" ]]; then
+		rm -rf "$VERIFY_DIR"
+	fi
+	rm -rf "$STAGING_DIR"
+}
+trap cleanup EXIT
 
 if [[ -z "$SIGNING_IDENTITY" ]]; then
 	SIGNING_IDENTITY="-"
-	print -u2 "Warning: using ad-hoc signing; system-audio recording permission may need to be granted again after each rebuild. Set APP_VOLUME_SIGNING_IDENTITY to a stable identity for persistent permission."
+	print -u2 "Warning: using ad-hoc signing; system-audio capture permission may need to be granted again after each rebuild. Set APP_VOLUME_SIGNING_IDENTITY to a stable identity for persistent permission."
 fi
 
 cd "$ROOT_DIR"
 swift build -c release
+
+BINARY_ARCHS="$(lipo -archs "$BUILD_DIR/AppVolumeControl")"
+if [[ "$BINARY_ARCHS" != "arm64" ]]; then
+	print -u2 "Error: expected an arm64 release binary, got: $BINARY_ARCHS"
+	exit 1
+fi
 
 mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/AppVolumeControl" "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl"
@@ -60,7 +74,8 @@ PLIST
 # Finder may add metadata xattrs to app bundles copied through the desktop.
 # Remove them before signing so Dock/LaunchServices sees a clean bundle.
 xattr -cr "$STAGED_APP_DIR" 2>/dev/null || true
-codesign --force --deep --sign "$SIGNING_IDENTITY" "$STAGED_APP_DIR" >/dev/null
+codesign --force --sign "$SIGNING_IDENTITY" "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl" >/dev/null
+codesign --force --sign "$SIGNING_IDENTITY" "$STAGED_APP_DIR" >/dev/null
 # The Documents file provider can attach Finder metadata to any bundle member
 # after signing. Strip all attached attributes once more before verification.
 xattr -cr "$STAGED_APP_DIR" 2>/dev/null || true
@@ -68,6 +83,15 @@ codesign --verify --deep --strict "$STAGED_APP_DIR"
 
 rm -rf "$APP_DIR"
 ditto --norsrc "$STAGED_APP_DIR" "$APP_DIR"
+xattr -cr "$APP_DIR" 2>/dev/null || true
+if ! codesign --verify --deep --strict "$APP_DIR" 2>/dev/null; then
+	if xattr -p com.apple.FinderInfo "$APP_DIR" >/dev/null 2>&1; then
+		print -u2 "Warning: Documents attached FinderInfo to the direct .app copy; the ZIP below is verified from a clean extraction."
+	else
+		print -u2 "Error: final app signature verification failed for a reason other than FinderInfo."
+		exit 1
+	fi
+fi
 rm -f "$ARCHIVE_PATH"
 (
 	cd "$STAGING_DIR"
@@ -75,7 +99,6 @@ rm -f "$ARCHIVE_PATH"
 )
 unzip -t "$ARCHIVE_PATH" >/dev/null
 VERIFY_DIR="$(mktemp -d)"
-trap 'rm -rf "$VERIFY_DIR"' EXIT
 /usr/bin/unzip -q "$ARCHIVE_PATH" -d "$VERIFY_DIR"
 codesign --verify --deep --strict "$VERIFY_DIR/AppVolumeControl.app"
 shasum -a 256 "$ARCHIVE_PATH" > "$CHECKSUM_PATH"
