@@ -5,12 +5,11 @@ import CoreAudio
 final class ProcessGainManager {
     private var engines: [pid_t: ProcessTapEngine] = [:]
     private var targetObjectIDs: [pid_t: [AudioObjectID]] = [:]
-    private var attemptedObjectIDs: [pid_t: [AudioObjectID]] = [:]
 
     func reconcile(
         applications: [AudioApplication],
         gainFor: (AudioApplication) -> Double,
-        forceIDs: Set<pid_t> = []
+        attachmentAllowed: (AudioApplication) -> Bool = { _ in true }
     ) {
         let processTapApplications = applications.filter { $0.controlKind == .processTap }
         let activeIDs = Set(processTapApplications.map(\.id))
@@ -24,6 +23,10 @@ final class ProcessGainManager {
         }
 
         for app in processTapApplications {
+            guard attachmentAllowed(app) else {
+                stop(processID: app.id)
+                continue
+            }
             let gain = min(max(gainFor(app), 0), 1)
             let objectIDs = ActiveAudioGrouping.sortedObjectIDs(
                 app.processObjectIDs.filter { CoreAudioSupport.isRunningOutput(processObject: $0) }
@@ -34,23 +37,30 @@ final class ProcessGainManager {
                 continue
             }
 
-            if forceIDs.contains(app.id) {
-                attemptedObjectIDs[app.id] = nil
-            }
+            let action = ProcessGainPlan.action(
+                isOutputActive: true,
+                isAttachmentAllowed: true,
+                gain: gain,
+                requestedObjectIDs: objectIDs,
+                currentObjectIDs: targetObjectIDs[app.id],
+                hasActiveEngine: engines[app.id]?.isActive == true
+            )
 
-            let engine = engines[app.id] ?? {
-                let newEngine = ProcessTapEngine()
-                engines[app.id] = newEngine
-                return newEngine
-            }()
-
-            if targetObjectIDs[app.id] != objectIDs || attemptedObjectIDs[app.id] != objectIDs {
-                engine.stop()
-                targetObjectIDs[app.id] = objectIDs
-                attemptedObjectIDs[app.id] = objectIDs
-                engine.start(processObjectIDs: objectIDs, volume: Float(gain))
-            } else {
-                engine.setVolume(Float(gain))
+            switch action {
+            case .none:
+                continue
+            case .stop:
+                stop(processID: app.id)
+            case let .update(updatedGain):
+                engines[app.id]?.setVolume(Float(updatedGain))
+            case let .start(startObjectIDs, startGain):
+                let engine = engines[app.id] ?? {
+                    let newEngine = ProcessTapEngine()
+                    engines[app.id] = newEngine
+                    return newEngine
+                }()
+                targetObjectIDs[app.id] = startObjectIDs.map { AudioObjectID($0) }
+                engine.start(processObjectIDs: objectIDs, volume: Float(startGain))
             }
         }
     }
@@ -59,8 +69,19 @@ final class ProcessGainManager {
         applications: [AudioApplication],
         gainFor: (AudioApplication) -> Double
     ) {
-        attemptedObjectIDs.removeAll()
+        targetObjectIDs.removeAll()
         reconcile(applications: applications, gainFor: gainFor)
+    }
+
+    func updateGain(for processID: pid_t, value: Double) {
+        engines[processID]?.setVolume(Float(min(max(value, 0), 1)))
+    }
+
+    func canEdit(_ app: AudioApplication) -> Bool {
+        guard app.controlKind == .processTap,
+              #available(macOS 18, *),
+              !app.processObjectIDs.isEmpty else { return false }
+        return engines[app.id]?.lastError == nil
     }
 
     func statusText(for app: AudioApplication) -> String? {
@@ -72,7 +93,7 @@ final class ProcessGainManager {
             return app.processObjectIDs.isEmpty ? "等待音频对象" : "等待输出增益接管"
         }
         if engine.isActive {
-            return "输出增益已连接"
+            return AudioApplicationStatus.processGainConnectedText
         }
         return engine.lastError ?? "等待输出增益接管"
     }
@@ -81,7 +102,6 @@ final class ProcessGainManager {
         engines[processID]?.stop()
         engines[processID] = nil
         targetObjectIDs[processID] = nil
-        attemptedObjectIDs[processID] = nil
     }
 
     func stopAll() {
@@ -90,6 +110,5 @@ final class ProcessGainManager {
         }
         engines.removeAll()
         targetObjectIDs.removeAll()
-        attemptedObjectIDs.removeAll()
     }
 }

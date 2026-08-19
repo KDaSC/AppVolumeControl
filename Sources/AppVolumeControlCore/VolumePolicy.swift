@@ -1,6 +1,6 @@
 public enum VolumePolicy {
     public static let defaultLevel = 0.75
-    public static let settingsSchemaVersion = 2
+    public static let settingsSchemaVersion = 4
 
     public static func migratedProcessGain(
         stored: Double?,

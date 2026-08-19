@@ -3,8 +3,8 @@ import PackageDescription
 
 let package = Package(
     name: "AppVolumeControl",
-    // SwiftPM's current macOS SDK accepts v15 as the source build baseline;
-    // the shipped app enforces macOS 18.0 through LSMinimumSystemVersion.
+    // The local SwiftPM/Clang toolchain cannot form a macosx18.0 target.
+    // The shipped app still enforces macOS 18.0 in Info.plist and at runtime.
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "AppVolumeControlCore", targets: ["AppVolumeControlCore"]),
@@ -13,7 +13,13 @@ let package = Package(
     targets: [
         .target(
             name: "AppVolumeControlCore",
+            dependencies: ["AppVolumeControlRealtime"],
             path: "Sources/AppVolumeControlCore"
+        ),
+        .target(
+            name: "AppVolumeControlRealtime",
+            path: "Sources/AppVolumeControlRealtime",
+            publicHeadersPath: "."
         ),
         .executableTarget(
             name: "AppVolumeControl",
