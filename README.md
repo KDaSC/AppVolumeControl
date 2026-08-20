@@ -1,53 +1,93 @@
-# 应用音量（AppVolumeControl）
+# AppVolumeControl · 应用音量控制
 
-面向 Apple Silicon Mac 的轻量级菜单栏工具。
+轻量级的原生 macOS 菜单栏工具，用于查看并控制正在输出声音的应用。<br>
+Native macOS menu bar utility for discovering and controlling apps that are currently producing audio.
 
-兼容性：本发布包只支持 macOS 18、macOS 26 和 macOS 27；当前交付包为 Apple Silicon（arm64）版本，Intel Mac 需要另行构建 x86_64 或 Universal 版本。通用输出增益使用 macOS 18+ 的公开 Core Audio Process Tap API。
+## 0.6.0 版本 / Release
 
-## 运行
+| 项目 / Item | 实际大小 / Size |
+| --- | ---: |
+| 下载包 `AppVolumeControl.zip` / Download archive | **178,626 bytes** · 174.44 KiB · 0.1786 MB |
+| SHA-256 文件 / Checksum file | **149 bytes** · 0.1455 KiB · 0.000149 MB |
+| 解压后的 App 磁盘占用 / Unpacked app disk usage | **约 636 KiB** · 0.62 MiB |
+
+以上数值来自 v0.6.0 实际发布资产；ZIP 是推荐下载格式。<br>
+The values above are measured from the v0.6.0 release assets; the ZIP is the recommended download format.
+
+**下载 / Download:** [v0.6.0 Pre-release](https://github.com/KDaSC/AppVolumeControl/releases/tag/v0.6.0)
+
+## 支持平台 / Platform
+
+- 仅提供 Apple Silicon（`arm64`）发布包；Intel Mac 需要另行构建 `x86_64` 或 Universal 版本。<br>
+  The release package is Apple Silicon (`arm64`) only; Intel Macs require a separate `x86_64` or Universal build.
+- 当前发布包支持 macOS 18、macOS 26 和 macOS 27。<br>
+  The current package supports macOS 18, macOS 26, and macOS 27.
+- 通用输出增益使用 macOS 18+ 公开的 Core Audio Process Tap API。<br>
+  Generic output gain uses the public Core Audio Process Tap API available on macOS 18+.
+
+## 安装与运行 / Install and run
+
+1. 下载 `AppVolumeControl.zip` 并解压到 `/Applications` 等非同步目录。<br>
+   Download `AppVolumeControl.zip` and extract it to a non-synced directory such as `/Applications`.
+2. 打开 `AppVolumeControl.app`，点击菜单栏滑杆图标。<br>
+   Open `AppVolumeControl.app`, then click its menu bar slider icon.
+3. 首次启用系统级输出增益时，按 macOS 原生提示授予系统音频捕获权限。<br>
+   On first use of system-level output gain, follow the native macOS prompt to grant audio-capture permission.
+
+直接从 `Documents` 文件提供器运行的 `.app` 副本可能带有额外元数据；若遇到签名提示，请重新从 ZIP 解压后运行。构建脚本验证的是干净解压后的 ZIP 副本。<br>
+An `.app` copied directly by the `Documents` file provider may carry extra metadata. If macOS reports a signature issue, extract the ZIP again and run that copy; the build script verifies a cleanly extracted ZIP copy.
+
+## 当前能力 / Current capabilities
+
+- **应用发现 / App discovery**：通过公开 CoreAudio 进程对象筛选 `IsRunningOutput == 1` 的音频进程，并沿父进程链归并回主应用。只显示实际正在输出声音的应用。<br>
+  Uses public CoreAudio process objects, keeps `IsRunningOutput == 1`, and maps helper processes back to their parent app. Only actively producing apps are shown.
+- **应用级音量 / App volume**：Music、Spotify、VLC、QuickTime Player 使用各自公开的 AppleScript 音量接口。<br>
+  Music, Spotify, VLC, and QuickTime Player use their public AppleScript volume interfaces.
+- **通用输出增益 / Generic output gain**：抖音、浏览器及其他没有独立公开音量接口的应用，点击“启用独立增益”后才建立 Process Tap 会话；默认目标和滑杆基准为 75%。<br>
+  For Douyin, browsers, and apps without a public independent-volume API, a Process Tap session starts only after “Enable independent gain” is clicked; the default target and slider baseline are 75%.
+- **设置 / Settings**：可设置默认输出增益、是否自动接管新应用、是否记住每个应用的增益，并清除已记住的数值。默认关闭自动接管和应用记忆。<br>
+  Configure default output gain, automatic handoff, per-app memory, and clearing remembered values. Automatic handoff and app memory are off by default.
+- **面板与定位 / Panel and positioning**：面板按应用数量自动收缩或滚动，使用原生状态栏锚点，兼容 Hidden Bar、无 Hidden Bar 和多屏环境。<br>
+  The panel shrinks or scrolls based on app count, uses the native status-bar anchor, and supports Hidden Bar, no Hidden Bar, and multi-display setups.
+- **实时性 / Real-time behavior**：音频回调使用无锁原子目标；停止路径等待 CoreAudio 清理完成，避免重复接管和蓝牙输出无声。<br>
+  Audio callbacks use lock-free atomic targets; shutdown waits for CoreAudio cleanup to avoid duplicate handoff and silent Bluetooth output.
+
+## 能力边界 / Boundaries
+
+- macOS 公共 SDK 没有适用于任意应用的通用“独立音量”接口；Process Tap 提供的是系统级**输出增益**，不是应用或网页播放器的内部音量。<br>
+  The public macOS SDK has no universal independent-volume API for arbitrary apps; Process Tap provides system-level **output gain**, not the app or web player's internal volume.
+- 浏览器标签页级音量需要浏览器扩展；0.6.0 不会伪造该能力。<br>
+  Per-tab browser volume requires a browser extension; 0.6.0 does not emulate that capability.
+- 增益只在应用实际播放音频时生效；网页音频仍归属于浏览器进程，无法仅靠 macOS 音频 API 可靠区分网页名称。<br>
+  Gain applies while an app is actually playing audio; web audio remains owned by the browser process and cannot be reliably split by webpage name using macOS audio APIs alone.
+
+## 从源码构建 / Build from source
 
 ```sh
 ./scripts/build-app.sh
 open outputs/AppVolumeControl.app
 ```
 
-构建也会输出 `outputs/AppVolumeControl.zip` 和对应的 `outputs/AppVolumeControl.zip.sha256`。若 `Documents` 的文件提供器给直接 `.app` 副本添加元数据，请优先使用 ZIP，并将它解压到非同步目录（例如 `/Applications`）后再运行；构建脚本验证的是干净解压后的 ZIP 副本，以保持签名有效。
+构建会生成 `outputs/AppVolumeControl.zip` 及 `outputs/AppVolumeControl.zip.sha256`。<br>
+The build creates `outputs/AppVolumeControl.zip` and `outputs/AppVolumeControl.zip.sha256`.
 
-点击菜单栏滑杆图标即可打开控制面板。
-
-核心吸附逻辑检查：
+运行测试 / Run tests:
 
 ```sh
 swift run AppVolumeControlTests
+swift build -c release -Xswiftc -warnings-as-errors
 ```
 
-## 当前能力
+## 权限与签名 / Permissions and signing
 
-- 应用发现：使用 macOS CoreAudio 的公开进程对象接口，只保留 `IsRunningOutput == 1` 的音频进程，并沿父进程链把音频辅助进程归并回主应用；没有正在输出声音的应用不会显示。
-- 应用级音量：对 Music、Spotify、VLC、QuickTime Player 使用各自公开的 AppleScript 音量接口。
-- 通用输出增益：抖音、浏览器和其他没有 AppleScript 独立音量接口的应用可使用 macOS 18+ 的公开 Core Audio Process Tap API。默认不会接管新应用：面板显示“原始输出 · 未启用独立增益”，只有点击“启用独立增益”后才建立该应用的增益会话；默认目标和滑杆基准均为 75%。
-- 权限提示：系统级输出增益只依赖 macOS 的系统音频捕获授权。首次启动实际 Tap 时由系统显示原生授权提示；应用不会把屏幕录制权限当作前置条件。
-- 基准音量：所有可控应用的吸附基准固定为 75%，拖到基准线前后 3% 会轻微吸附；不再提供右键菜单。
-- 刷新策略：打开面板时读取一次音量；应用启动、激活、退出以及面板打开期间只刷新轻量进程列表。面板关闭后不会为了发现新应用而创建 Process Tap。
-- 面板：只保留应用音量标题和紧凑列表，移除“只显示各应用音量...”副标题和刷新按钮；应用少时自动收缩，应用多时列表滚动。
-- 窗口定位：使用 macOS 原生状态栏锚点，并做小幅安全上移，让箭头贴近黑色菜单栏下沿；兼容 Hidden Bar、无 Hidden Bar 和多屏环境。
-- 未提供独立音量接口的应用不会伪造内部音量；未启用时明确显示原始输出状态，成功接入后显示“输出增益”，权限或创建失败时显示实际错误状态。
-- 滑块语义：Music、Spotify、VLC、QuickTime 显示应用公开的内部音量；其他应用显示的是“输出增益”，不伪造应用内部音量。原生音量尚未读回时显示“音量未知”，不会用 75% 占位。
-- Tap 生命周期：停止路径保持引擎到 CoreAudio 清理完成，避免重复静音接管器和蓝牙输出无声；实时音频回调使用无锁原子目标，不在回调线程执行锁、分配或进程操作。
-- 设置：面板右上角齿轮可设置默认输出增益、是否自动接管新应用、是否记住每个应用的输出增益，以及清除已记住的增益。默认关闭自动接管和应用记忆，因此每个新应用从 75% 开始且不受上次设置影响。
-
-## 平台限制
-
-- macOS 公共 SDK 没有适用于任意应用的通用“独立音量”接口；抖音这类 Electron 应用通过公开 Process Tap（macOS 18+）实现系统级输出增益。
-- 抖音的滑杆控制的是“输出增益”（在抖音自身音量之上再乘一个系数），不是抖音界面里显示的内部音量值；抖音不对外暴露内部音量，读取不到该数值是系统限制。
-- Process Tap 需要系统音频捕获授权；授权后即可使用。
-- 增益只在应用实际播放音频时生效（CoreAudio 只有播放时才注册音频进程）；暂停时应用不会显示，恢复播放后重新识别并接入已保存的目标增益。
-- 浏览器里的抖音网页音频仍归属于浏览器进程，无法仅靠 macOS 音频 API 可靠区分成网页名称。
-
-## 权限持久性
-
-如果未提供代码签名身份，构建会使用 ad-hoc 签名，因此每次重新构建后 macOS 可能要求重新授予系统音频捕获权限。稳定的 Apple Development 或 Developer ID 身份可以让系统把授权绑定到稳定签名；构建脚本不会自动修改钥匙串，也不会创建证书。
+未提供代码签名身份时，构建使用 ad-hoc 签名；重新构建后 macOS 可能要求重新授予系统音频捕获权限。构建脚本不会修改钥匙串或创建证书。<br>
+Without a code-signing identity, builds use ad-hoc signing; macOS may request audio-capture permission again after a rebuild. The build script does not modify Keychain or create certificates.
 
 ```sh
 APP_VOLUME_SIGNING_IDENTITY="Developer ID Application: ..." ./scripts/build-app.sh
 ```
+
+## 项目状态 / Project status
+
+当前 `v0.6.0` 是预发布版本，适合 Apple Silicon Mac 的本地试用。<br>
+`v0.6.0` is a pre-release intended for local use on Apple Silicon Macs.
