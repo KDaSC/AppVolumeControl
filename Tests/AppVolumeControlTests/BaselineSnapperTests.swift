@@ -56,6 +56,21 @@ expect(
     VolumePolicy.migratedProcessGain(stored: 0.62, previousSchemaVersion: 1) == 0.62,
     "an explicit user gain must survive migration"
 )
+expect(
+    VolumePolicy.migratedProcessGain(stored: 1, previousSchemaVersion: 2) == 0.75,
+    "the previous 100% default must migrate even from schema 2"
+)
+expect(
+    VolumeSettings.defaultValue.defaultOutputGain == 0.75,
+    "新安装的默认输出增益必须是 75%"
+)
+expect(
+    VolumeSettings.resolvedGain(
+        settings: .defaultValue,
+        storedGain: 0.42
+    ) == 0.75,
+    "默认设置不能沿用上一次应用的增益"
+)
 
 expect(
     ActiveAudioGrouping.visibleProcessIDs(from: [
@@ -83,6 +98,82 @@ expect(
 expect(
     ProcessGainPlan.shouldStartSystemAudioCapture(isOutputActive: true, gain: 0.75),
     "系统音频捕获不能被屏幕录制预检阻断"
+)
+expect(
+    ProcessGainPlan.action(
+        isOutputActive: true,
+        isAttachmentAllowed: true,
+        gain: 0.50,
+        requestedObjectIDs: [3, 9],
+        currentObjectIDs: [3, 9],
+        hasActiveEngine: true
+    ) == .update(0.50),
+    "改变滑块时只能更新增益，不能重启已连接的 tap"
+)
+expect(
+    ProcessGainPlan.action(
+        isOutputActive: true,
+        isAttachmentAllowed: true,
+        gain: 0.50,
+        requestedObjectIDs: [3, 9],
+        currentObjectIDs: [3, 9],
+        hasActiveEngine: false
+    ) == .none,
+    "同一组对象的启动失败不能被轮询反复重试"
+)
+expect(
+    ProcessGainPlan.action(
+        isOutputActive: true,
+        isAttachmentAllowed: true,
+        gain: 0.50,
+        requestedObjectIDs: [3, 9],
+        currentObjectIDs: [3],
+        hasActiveEngine: true
+    ) == .start(objectIDs: [3, 9], gain: 0.50),
+    "音频对象集合改变时才允许重建 tap"
+)
+expect(
+    ProcessGainPlan.action(
+        isOutputActive: true,
+        isAttachmentAllowed: false,
+        gain: 0.50,
+        requestedObjectIDs: [3, 9],
+        currentObjectIDs: nil,
+        hasActiveEngine: false
+    ) == .none,
+    "未明确启用时不能自动接管应用输出"
+)
+expect(
+    ProcessGainPlan.action(
+        isOutputActive: true,
+        isAttachmentAllowed: false,
+        gain: 0.50,
+        requestedObjectIDs: [3, 9],
+        currentObjectIDs: [3, 9],
+        hasActiveEngine: true
+    ) == .stop,
+    "关闭接管后必须停止既有 tap"
+)
+
+let realtimeGain = RealtimeGain(initialValue: 1)
+realtimeGain.setTarget(0.5)
+var inputSamples: [Float] = [1, 1, 1, 1]
+var outputSamples = Array(repeating: Float.zero, count: inputSamples.count)
+inputSamples.withUnsafeBufferPointer { input in
+    outputSamples.withUnsafeMutableBufferPointer { output in
+        realtimeGain.process(
+            input: input.baseAddress!,
+            output: output.baseAddress!,
+            count: input.count,
+            rampCoefficient: 1
+        )
+    }
+}
+expect(outputSamples == [0.5, 0.5, 0.5, 0.5], "实时增益必须在回调内立即应用新目标")
+
+expect(
+    AudioApplicationStatus.processGainText == "输出增益",
+    "进程 tap 的数值必须明确是输出增益而不是应用内部音量"
 )
 expect(
     PanelLayout.height(applicationCount: 0, showsPermissionNotice: false) == 112,
