@@ -7,9 +7,9 @@ Native macOS menu bar utility for discovering and controlling apps that are curr
 
 | 项目 / Item | 实际大小 / Size |
 | --- | ---: |
-| 下载包 `AppVolumeControl.zip` / Download archive | **138,838 bytes** · 135.58 KiB · 0.1324 MiB |
+| 下载包 `AppVolumeControl.zip` / Download archive | **142,260 bytes** · 138.93 KiB · 0.1357 MiB |
 | SHA-256 文件 / Checksum file | **87 bytes** · 0.08 KiB · 0.0001 MiB |
-| `AppVolumeControl` 二进制 / Executable | **385,872 bytes** · 376.83 KiB · 0.3680 MiB |
+| `AppVolumeControl` 二进制 / Executable | **386,992 bytes** · 377.92 KiB · 0.3691 MiB |
 | 解压后的 App 磁盘占用 / Unpacked app disk usage | **388 KiB** · 0.3789 MiB |
 
 以上数值来自本地构建的 v0.7.0 / Build 8 资产；ZIP 是推荐下载格式。<br>
@@ -50,8 +50,8 @@ An `.app` copied directly by the `Documents` file provider may carry extra metad
   Configure default output gain, automatic handoff, per-app memory, and clearing remembered values. Automatic handoff and app memory are off by default.
 - **面板与定位 / Panel and positioning**：面板按应用数量自动收缩或滚动，使用原生状态栏锚点，兼容 Hidden Bar、无 Hidden Bar 和多屏环境。<br>
   The panel shrinks or scrolls based on app count, uses the native status-bar anchor, and supports Hidden Bar, no Hidden Bar, and multi-display setups.
-- **实时性 / Real-time behavior**：音频回调使用无锁原子目标；停止路径等待 CoreAudio 清理完成，避免重复接管和蓝牙输出无声。<br>
-  Audio callbacks use lock-free atomic targets; shutdown waits for CoreAudio cleanup to avoid duplicate handoff and silent Bluetooth output.
+- **实时性 / Real-time behavior**：音频回调使用无锁原子目标；停止与替换在每个引擎的串行队列中先清理旧路由，避免重复接管和蓝牙输出无声。<br>
+  Audio callbacks use lock-free atomic targets; each engine's serial queue cleans up the old route before a replacement starts, avoiding duplicate handoff and silent Bluetooth output.
 - **可逆静音 / Reversible mute**：静音会保留本次会话中原先的非零增益；取消静音会恢复该值。<br>
   Mute retains the previous non-zero gain in the current session; unmuting restores it.
 - **瞬时零值 / Transient zero**：滑杆降到 0% 只是当前会话的瞬时状态，不会把 0% 作为可恢复的非零增益保存。<br>

@@ -125,6 +125,38 @@ expect(!VolumePolicy.isMuted(0.000_11), "阈值以上必须视为非静音")
 expect(VolumePolicy.shouldPersist(gain: 0.42, intent: .sliderCommit), "非零滑杆值可记忆")
 expect(!VolumePolicy.shouldPersist(gain: 0, intent: .sliderCommit), "滑到 0% 不能覆盖记忆")
 expect(!VolumePolicy.shouldPersist(gain: 0.42, intent: .temporaryMute), "按钮恢复不能改写记忆")
+expect(
+    !VolumePolicy.nativeReadAllowed(hasActiveWrite: true),
+    "原生写入拥有当前会话时不能启动音量读取"
+)
+expect(
+    VolumePolicy.nativeReadAllowed(hasActiveWrite: false),
+    "没有原生写入时必须允许音量读取"
+)
+expect(
+    VolumePolicy.resolvedNativeWriteGain(
+        requestedGain: 0.42,
+        confirmedGain: 0.75,
+        succeeded: true
+    ) == 0.42,
+    "原生写入成功后显示值和确认值必须采用请求值"
+)
+expect(
+    VolumePolicy.resolvedNativeWriteGain(
+        requestedGain: 0.42,
+        confirmedGain: 0.75,
+        succeeded: false
+    ) == 0.75,
+    "原生写入失败后必须恢复之前确认的值"
+)
+expect(
+    VolumePolicy.resolvedNativeWriteGain(
+        requestedGain: 0.42,
+        confirmedGain: nil,
+        succeeded: false
+    ) == nil,
+    "没有确认值的原生写入失败后必须回到未知状态"
+)
 
 expect(
     ActiveAudioGrouping.visibleProcessIDs(from: [
@@ -164,6 +196,18 @@ expect(
 expect(
     !ProcessGainPlan.attachmentAllowed(explicitlyArmed: false, automaticallyAttachNewApps: false),
     "全部关闭时不能接管"
+)
+expect(
+    ProcessGainPlan.automaticAttachmentChanged(from: false, to: true),
+    "打开自动接管必须立即触发一次重新协调"
+)
+expect(
+    ProcessGainPlan.automaticAttachmentChanged(from: true, to: false),
+    "关闭自动接管必须立即触发一次重新协调"
+)
+expect(
+    !ProcessGainPlan.automaticAttachmentChanged(from: true, to: true),
+    "自动接管设置不变时不能重复协调"
 )
 expect(
     ProcessGainPlan.action(
@@ -219,6 +263,38 @@ expect(
         hasActiveEngine: true
     ) == .stop,
     "关闭接管后必须停止既有 tap"
+)
+expect(
+    ProcessGainPlan.shouldReleaseEngine(
+        cleanupRequestIsCurrent: true,
+        engineIsCurrent: true,
+        hasReplacementTarget: false
+    ),
+    "当前引擎完成当前清理且没有替换目标时必须释放"
+)
+expect(
+    !ProcessGainPlan.shouldReleaseEngine(
+        cleanupRequestIsCurrent: true,
+        engineIsCurrent: true,
+        hasReplacementTarget: true
+    ),
+    "已有替换目标时必须保留同一引擎以保证队列顺序"
+)
+expect(
+    !ProcessGainPlan.shouldReleaseEngine(
+        cleanupRequestIsCurrent: false,
+        engineIsCurrent: true,
+        hasReplacementTarget: false
+    ),
+    "过期清理请求不能释放当前引擎"
+)
+expect(
+    !ProcessGainPlan.shouldReleaseEngine(
+        cleanupRequestIsCurrent: true,
+        engineIsCurrent: false,
+        hasReplacementTarget: false
+    ),
+    "旧引擎的清理回调不能释放替换引擎"
 )
 
 let realtimeGain = RealtimeGain(initialValue: 1)
@@ -276,3 +352,39 @@ expect(
     "queued cleanup must retain its owner until the cleanup runs"
 )
 expect(weakProbe == nil, "queued cleanup owner should be released after the work completes")
+
+final class FIFOProbe: @unchecked Sendable {
+    var events: [String] = []
+}
+
+let fifoProbe = FIFOProbe()
+let fifoQueue = DispatchQueue(label: "lifecycle-fifo-test")
+let fifoFinished = DispatchSemaphore(value: 0)
+AsyncWorkOwnership.enqueue(owner: fifoProbe, on: fifoQueue) { owner in
+    owner.events.append("cleanup")
+}
+AsyncWorkOwnership.enqueue(owner: fifoProbe, on: fifoQueue) { owner in
+    owner.events.append("replacement")
+    fifoFinished.signal()
+}
+expect(
+    fifoFinished.wait(timeout: .now() + 1) == .success,
+    "同一引擎队列上的替换启动必须完成"
+)
+expect(
+    fifoProbe.events == ["cleanup", "replacement"],
+    "同一引擎队列必须先清理旧路由再启动替换路由"
+)
+
+let noOpStopFinished = DispatchSemaphore(value: 0)
+ProcessTapEngine().stop {
+    noOpStopFinished.signal()
+}
+expect(
+    noOpStopFinished.wait(timeout: .now() + 1) == .success,
+    "无活动路由的停止也必须在生命周期队列上完成回调"
+)
+expect(
+    noOpStopFinished.wait(timeout: .now() + 0.1) == .timedOut,
+    "一次停止请求的完成回调只能执行一次"
+)

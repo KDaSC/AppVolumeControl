@@ -85,6 +85,18 @@ public enum VolumePolicy {
         intent == .sliderCommit && !isMuted(gain)
     }
 
+    public static func nativeReadAllowed(hasActiveWrite: Bool) -> Bool {
+        !hasActiveWrite
+    }
+
+    public static func resolvedNativeWriteGain(
+        requestedGain: Double,
+        confirmedGain: Double?,
+        succeeded: Bool
+    ) -> Double? {
+        succeeded ? clamped(requestedGain) : confirmedGain.map(clamped)
+    }
+
     public static func migratedProcessGain(
         stored: Double?,
         previousSchemaVersion: Int

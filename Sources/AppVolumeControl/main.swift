@@ -286,6 +286,15 @@ final class VolumeViewModel: ObservableObject {
         )
     }
 
+    func setAutomaticallyAttachNewApps(_ value: Bool) {
+        let previous = settingsStore.settings.automaticallyAttachNewApps
+        guard ProcessGainPlan.automaticAttachmentChanged(from: previous, to: value) else { return }
+        settingsStore.settings.automaticallyAttachNewApps = value
+        monitorProcessTap()
+        objectWillChange.send()
+        refresh(readVolumes: false, forceDiscovery: true)
+    }
+
     private func clearSession(for processID: pid_t) {
         processGainManager.stop(processID: processID)
         applicationVolumes[processID] = nil
@@ -452,6 +461,7 @@ final class VolumeViewModel: ObservableObject {
     }
 
     private func readVolumeAsync(for app: AudioApplication) {
+        guard VolumePolicy.nativeReadAllowed(hasActiveWrite: nativeWriteIDs[app.id] != nil) else { return }
         volumeReadTasks[app.id]?.cancel()
         let bundleID = app.bundleIdentifier
         let processID = app.id
@@ -472,7 +482,8 @@ final class VolumeViewModel: ObservableObject {
               sessionIdentities[processID] == identity else { return }
         volumeReadTasks[processID] = nil
         volumeReadIDs[processID] = nil
-        guard applications.contains(where: { $0.id == processID }),
+        guard VolumePolicy.nativeReadAllowed(hasActiveWrite: nativeWriteIDs[processID] != nil),
+              applications.contains(where: { $0.id == processID }),
               !editingApplicationIDs.contains(processID),
               let volume else { return }
         applicationVolumes[processID] = volume
@@ -664,11 +675,13 @@ final class VolumeViewModel: ObservableObject {
                           let currentTask = self.pendingTasks[processID],
                           ObjectIdentifier(currentTask) == taskIdentifier else { return }
                     self.pendingTasks[processID] = nil
-                    if succeeded {
-                        self.confirmedApplicationVolumes[processID] = requestedValue
-                    } else if let confirmed {
-                        self.applicationVolumes[processID] = confirmed
-                    }
+                    let resolvedGain = VolumePolicy.resolvedNativeWriteGain(
+                        requestedGain: requestedValue,
+                        confirmedGain: confirmed,
+                        succeeded: succeeded
+                    )
+                    self.applicationVolumes[processID] = resolvedGain
+                    self.confirmedApplicationVolumes[processID] = resolvedGain
                     self.nativeWriteIDs[processID] = nil
                     completion?(succeeded)
                 }
@@ -680,9 +693,13 @@ final class VolumeViewModel: ObservableObject {
                 guard self.nativeWriteIDs[processID] == writeID,
                       self.sessionIdentities[processID] == identity else { return }
                 self.pendingTasks[processID] = nil
-                if let confirmed {
-                    self.applicationVolumes[processID] = confirmed
-                }
+                let resolvedGain = VolumePolicy.resolvedNativeWriteGain(
+                    requestedGain: requestedValue,
+                    confirmedGain: confirmed,
+                    succeeded: false
+                )
+                self.applicationVolumes[processID] = resolvedGain
+                self.confirmedApplicationVolumes[processID] = resolvedGain
                 self.nativeWriteIDs[processID] = nil
                 completion?(false)
             }
@@ -824,7 +841,11 @@ struct AppVolumeRow: View {
                 .buttonStyle(.borderless)
                 .help(model.isMuted(app) ? "恢复 \(app.name) 音量" : "静音 \(app.name)")
                 .accessibilityLabel(Text(model.isMuted(app) ? "恢复 \(app.name) 音量" : "静音 \(app.name)"))
-                .accessibilityHint(Text("只影响这个应用的当前音频会话"))
+                .accessibilityHint(Text(
+                    app.controlKind == .processTap
+                        ? "只影响这个应用当前 Process Tap 会话的输出增益"
+                        : "通过 AppleScript 修改这个应用自己的音量"
+                ))
             } else {
                 if app.controlKind == .processTap && !model.independentGainEnabled(for: app) {
                     Button(AudioApplicationStatus.enableProcessGainText) {
@@ -909,10 +930,12 @@ final class PanelCoordinator: NSObject {
     private var globalEventMonitor: Any?
     private var lastAnchorRect: CGRect?
     private var lastPanelSize: CGSize?
+    private let onHide: () -> Void
 
     var isVisible: Bool { panel.isVisible }
 
-    init(contentViewController: NSViewController) {
+    init(contentViewController: NSViewController, onHide: @escaping () -> Void) {
+        self.onHide = onHide
         panel = NSPanel(
             contentRect: CGRect(origin: .zero, size: Self.initialPanelSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -943,8 +966,13 @@ final class PanelCoordinator: NSObject {
     }
 
     func hide() {
-        stopTracking()
+        handleHidden()
         panel.orderOut(nil)
+    }
+
+    private func handleHidden() {
+        stopTracking()
+        onHide()
     }
 
     func updateAnchor(fallbackScreen: NSScreen?) {
@@ -1038,6 +1066,16 @@ final class PanelCoordinator: NSObject {
             })
         }
         observers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !self.panel.isVisible else { return }
+                self.handleHidden()
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didResizeNotification,
             object: panel,
             queue: .main
@@ -1120,7 +1158,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             contentViewController: NSHostingController(rootView: VolumePanelView(
                 model: model,
                 onSettings: { [weak self] in self?.showSettings() }
-            ))
+            )),
+            onHide: { [weak self] in self?.stopRefreshTimer() }
         )
         panelCoordinator.updateContentHeight(model.panelHeight)
 
@@ -1141,7 +1180,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showSettings() {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(store: model.settingsStore)
+            settingsWindowController = SettingsWindowController(
+                store: model.settingsStore,
+                onAutomaticAttachmentChange: { [weak model] value in
+                    model?.setAutomaticallyAttachNewApps(value)
+                }
+            )
         }
         settingsWindowController?.showWindow(nil)
         settingsWindowController?.window?.center()

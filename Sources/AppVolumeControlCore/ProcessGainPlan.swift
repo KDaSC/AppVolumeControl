@@ -21,6 +21,18 @@ public enum ProcessGainPlan {
         explicitlyArmed || automaticallyAttachNewApps
     }
 
+    public static func automaticAttachmentChanged(from previous: Bool, to current: Bool) -> Bool {
+        previous != current
+    }
+
+    public static func shouldReleaseEngine(
+        cleanupRequestIsCurrent: Bool,
+        engineIsCurrent: Bool,
+        hasReplacementTarget: Bool
+    ) -> Bool {
+        cleanupRequestIsCurrent && engineIsCurrent && !hasReplacementTarget
+    }
+
     public static func action(
         isOutputActive: Bool,
         isAttachmentAllowed: Bool = true,

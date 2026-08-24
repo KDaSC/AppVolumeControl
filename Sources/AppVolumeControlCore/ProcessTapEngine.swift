@@ -77,8 +77,13 @@ public final class ProcessTapEngine: @unchecked Sendable {
     }
 
     public func stop() {
+        stop(completion: {})
+    }
+
+    public func stop(completion: @escaping @Sendable () -> Void) {
         AsyncWorkOwnership.enqueue(owner: self, on: queue) { engine in
             engine._stopInternal()
+            completion()
         }
     }
 

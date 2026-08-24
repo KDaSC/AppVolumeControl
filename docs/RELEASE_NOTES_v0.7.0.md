@@ -8,8 +8,10 @@
 
 ## 重点更新 / Highlights
 
-- 会话输出增益在播放状态变化期间保持稳定；统一的附着状态清楚区分“已允许”与“已连接”。<br>
-  Session output gain remains stable across playback-state changes; the unified attachment state clearly distinguishes “allowed” from “connected”.
+- 在同一活跃输出会话内，即使反复执行发现刷新，会话输出增益仍保持稳定；统一的附着状态清楚区分“已允许”与“已连接”。<br>
+  Session output gain remains stable across repeated discovery refreshes within the same active-output session; the unified attachment state clearly distinguishes “allowed” from “connected”.
+- 自动接管设置切换后会立即重新协调；关闭自动接管只停止自动启用的会话，手动启用的会话继续保留。<br>
+  Automatic attachment now reconciles immediately when toggled; turning it off stops auto-only sessions while preserving manually enabled sessions.
 - 新增可逆静音：静音保留当前会话中原先的非零增益，取消静音恢复该值。<br>
   Reversible mute is new: muting retains the prior non-zero gain in the current session, and unmuting restores it.
 - 滑杆降到 0% 是瞬时零值，不会被保存为后续恢复所用的非零增益。<br>
@@ -56,13 +58,13 @@ Results: `0.7.0`, `8`, and `AppVolumeControl.zip: OK`.
 
 | 资产 / Asset | 实际大小 / Measured size |
 | --- | ---: |
-| `AppVolumeControl.zip` | **138,838 bytes** · 135.58 KiB · 0.1324 MiB |
+| `AppVolumeControl.zip` | **142,260 bytes** · 138.93 KiB · 0.1357 MiB |
 | `AppVolumeControl.zip.sha256` | **87 bytes** · 0.08 KiB · 0.0001 MiB |
-| `AppVolumeControl.app/Contents/MacOS/AppVolumeControl` | **385,872 bytes** · 376.83 KiB · 0.3680 MiB |
+| `AppVolumeControl.app/Contents/MacOS/AppVolumeControl` | **386,992 bytes** · 377.92 KiB · 0.3691 MiB |
 | `AppVolumeControl.app` 磁盘占用 / disk usage | **388 KiB** · 0.3789 MiB |
 
 归档条目时间戳已固定；相同输入的重复构建会生成相同的 SHA-256。<br>
 Archive entry timestamps are fixed; repeated builds from the same inputs produce the same SHA-256.
 
-SHA-256（确定性归档 / deterministic archive）：`1714adfc9ccce8b8c4329045beab2d0f26a95077803293839cd599537741861f`。<br>
-SHA-256 (deterministic archive): `1714adfc9ccce8b8c4329045beab2d0f26a95077803293839cd599537741861f`.
+SHA-256（确定性归档 / deterministic archive）：`0730d4f67b98f252f893ac3661e696431ca42655052d3f6174175e2beca272a9`。<br>
+SHA-256 (deterministic archive): `0730d4f67b98f252f893ac3661e696431ca42655052d3f6174175e2beca272a9`.
