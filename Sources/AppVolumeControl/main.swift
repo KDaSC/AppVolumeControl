@@ -17,7 +17,6 @@ struct AudioApplication: Identifiable {
     let processObjectIDs: [AudioObjectID]
     let isRunningOutput: Bool
     let controlKind: VolumeControlKind?
-    let reportedVolume: Double?
 
     var canControlVolume: Bool { controlKind != nil }
 }
@@ -256,6 +255,9 @@ final class VolumeViewModel: ObservableObject {
     private var confirmedApplicationVolumes: [pid_t: Double] = [:]
     private var editingApplicationIDs = Set<pid_t>()
     private var inactiveSince: [pid_t: Date] = [:]
+    private var sessionIdentities: [pid_t: SessionIdentity] = [:]
+    private var muteRestoreVolumes: [pid_t: Double] = [:]
+    private var nativeWriteIDs: [pid_t: UUID] = [:]
     private let inactiveGrace: TimeInterval = 0.8
     private var lastAudioProcessIDs = Set<pid_t>()
     private var lastRunningOutputProcessIDs = Set<pid_t>()
@@ -271,6 +273,35 @@ final class VolumeViewModel: ObservableObject {
     ]
 
     private let processGainManager = ProcessGainManager()
+
+    private func sessionIdentity(for app: AudioApplication) -> SessionIdentity {
+        SessionIdentity(processID: app.id, bundleIdentifier: app.bundleIdentifier)
+    }
+
+    private func attachmentAllowed(for app: AudioApplication) -> Bool {
+        ProcessGainPlan.attachmentAllowed(
+            explicitlyArmed: armedProcessIDs.contains(app.id),
+            automaticallyAttachNewApps: settingsStore.settings.automaticallyAttachNewApps
+        )
+    }
+
+    private func clearSession(for processID: pid_t) {
+        processGainManager.stop(processID: processID)
+        applicationVolumes[processID] = nil
+        confirmedApplicationVolumes[processID] = nil
+        editingApplicationIDs.remove(processID)
+        inactiveSince[processID] = nil
+        sessionIdentities[processID] = nil
+        muteRestoreVolumes[processID] = nil
+        armedProcessIDs.remove(processID)
+        volumeReadTasks.removeValue(forKey: processID)?.cancel()
+        nativeWriteTasks.removeValue(forKey: processID)?.cancel()
+        nativeWriteIDs[processID] = nil
+        if let task = pendingTasks.removeValue(forKey: processID), task.isRunning {
+            task.terminate()
+        }
+    }
+
     private func isUserFacingApplication(_ app: NSRunningApplication, name: String, bundleID: String) -> Bool {
         guard app.activationPolicy == .regular || app.activationPolicy == .accessory else { return false }
         if Self.hiddenBundleIDs.contains(bundleID) { return false }
@@ -346,9 +377,6 @@ final class VolumeViewModel: ObservableObject {
             let controlKind: VolumeControlKind? = AppVolumeAdapter.supports(bundleID)
                 ? .appleScript
                 : .processTap
-            let reportedVolume: Double? = controlKind == .processTap
-                ? storedProcessTapGain(for: bundleID)
-                : applicationVolumes[app.processIdentifier]
             let processObjectIDs = ActiveAudioGrouping.sortedObjectIDs(
                 processObjectIDsByHost[app.processIdentifier, default: []]
             )
@@ -359,11 +387,27 @@ final class VolumeViewModel: ObservableObject {
                 icon: app.icon ?? NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)!,
                 processObjectIDs: processObjectIDs,
                 isRunningOutput: true,
-                controlKind: controlKind,
-                reportedVolume: reportedVolume
+                controlKind: controlKind
             )
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+        for app in discoveredApplications {
+            let identity = sessionIdentity(for: app)
+            let previousIdentity = sessionIdentities[app.id]
+            if let previousIdentity, previousIdentity != identity {
+                clearSession(for: app.id)
+            }
+            if app.controlKind == .processTap {
+                applicationVolumes[app.id] = VolumePolicy.sessionGain(
+                    existingGain: applicationVolumes[app.id],
+                    previousIdentity: sessionIdentities[app.id],
+                    identity: identity,
+                    initialGain: settingsStore.resolvedGain(for: app.bundleIdentifier)
+                )
+            }
+            sessionIdentities[app.id] = identity
+        }
 
         let discoveredIDs = Set(discoveredApplications.map(\.id))
         for app in discoveredApplications {
@@ -381,8 +425,7 @@ final class VolumeViewModel: ObservableObject {
                 icon: previous.icon,
                 processObjectIDs: previous.processObjectIDs,
                 isRunningOutput: false,
-                controlKind: previous.controlKind,
-                reportedVolume: previous.reportedVolume
+                controlKind: previous.controlKind
             ))
         }
         applications = nextApplications.sorted {
@@ -394,17 +437,8 @@ final class VolumeViewModel: ObservableObject {
         }
 
         let currentIDs = Set(applications.map(\.id))
-        applicationVolumes = applicationVolumes.filter { currentIDs.contains($0.key) }
-        confirmedApplicationVolumes = confirmedApplicationVolumes.filter { currentIDs.contains($0.key) }
-        pendingTasks = pendingTasks.filter { currentIDs.contains($0.key) }
-        for processID in volumeReadTasks.keys where !currentIDs.contains(processID) {
-            volumeReadTasks.removeValue(forKey: processID)?.cancel()
-        }
-        for app in applications {
-            if let volume = app.reportedVolume {
-                applicationVolumes[app.id] = volume
-                confirmedApplicationVolumes[app.id] = volume
-            }
+        for processID in Set(sessionIdentities.keys).subtracting(currentIDs) {
+            clearSession(for: processID)
         }
         isRefreshing = false
         monitorProcessTap()
@@ -419,18 +453,20 @@ final class VolumeViewModel: ObservableObject {
         volumeReadTasks[app.id]?.cancel()
         let bundleID = app.bundleIdentifier
         let processID = app.id
+        let identity = sessionIdentity(for: app)
         volumeReadTasks[app.id] = Task.detached(priority: .utility) { [weak self] in
             let volume = AppVolumeAdapter.currentVolume(bundleID: bundleID)
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
-                self?.applyReadVolume(volume, processID: processID)
+                self?.applyReadVolume(volume, processID: processID, identity: identity)
             }
         }
     }
 
-    private func applyReadVolume(_ volume: Double?, processID: pid_t) {
+    private func applyReadVolume(_ volume: Double?, processID: pid_t, identity: SessionIdentity) {
         volumeReadTasks[processID] = nil
-        guard applications.contains(where: { $0.id == processID }),
+        guard sessionIdentities[processID] == identity,
+              applications.contains(where: { $0.id == processID }),
               !editingApplicationIDs.contains(processID),
               let volume else { return }
         applicationVolumes[processID] = volume
@@ -446,7 +482,7 @@ final class VolumeViewModel: ObservableObject {
         case .appleScript:
             return applicationVolumes[app.id] != nil
         case .processTap:
-            return armedProcessIDs.contains(app.id) && processGainManager.canEdit(app)
+            return attachmentAllowed(for: app) && processGainManager.canEdit(app)
         case nil:
             return false
         }
@@ -502,14 +538,10 @@ final class VolumeViewModel: ObservableObject {
     }
 
     func tapStatusText(for app: AudioApplication) -> String? {
-        if app.controlKind == .processTap, !armedProcessIDs.contains(app.id) {
+        if app.controlKind == .processTap, !attachmentAllowed(for: app) {
             return AudioApplicationStatus.unarmedProcessGainText
         }
         return processGainManager.statusText(for: app)
-    }
-
-    private func storedProcessTapGain(for bundleID: String) -> Double {
-        settingsStore.resolvedGain(for: bundleID)
     }
 
     private func monitorProcessTap() {
@@ -520,7 +552,7 @@ final class VolumeViewModel: ObservableObject {
             },
             attachmentAllowed: { [weak self] app in
                 guard let self else { return false }
-                return self.armedProcessIDs.contains(app.id) || self.settingsStore.settings.automaticallyAttachNewApps
+                return self.attachmentAllowed(for: app)
             }
         )
     }
@@ -528,7 +560,9 @@ final class VolumeViewModel: ObservableObject {
     func enableIndependentGain(for app: AudioApplication) {
         guard app.controlKind == .processTap else { return }
         armedProcessIDs.insert(app.id)
-        applicationVolumes[app.id] = settingsStore.resolvedGain(for: app.bundleIdentifier)
+        if applicationVolumes[app.id] == nil {
+            applicationVolumes[app.id] = settingsStore.resolvedGain(for: app.bundleIdentifier)
+        }
         monitorProcessTap()
     }
 
@@ -538,7 +572,7 @@ final class VolumeViewModel: ObservableObject {
     }
 
     func independentGainEnabled(for app: AudioApplication) -> Bool {
-        armedProcessIDs.contains(app.id)
+        attachmentAllowed(for: app)
     }
 
     func setAppVolume(_ value: Double, for app: AudioApplication) {
