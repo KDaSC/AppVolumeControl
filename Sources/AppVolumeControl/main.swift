@@ -251,6 +251,7 @@ final class VolumeViewModel: ObservableObject {
     private var pendingTasks: [pid_t: Process] = [:]
     private var nativeWriteTasks: [pid_t: Task<Void, Never>] = [:]
     private var volumeReadTasks: [pid_t: Task<Void, Never>] = [:]
+    private var volumeReadIDs: [pid_t: UUID] = [:]
     private var discoveryTask: Task<Void, Never>?
     private var confirmedApplicationVolumes: [pid_t: Double] = [:]
     private var editingApplicationIDs = Set<pid_t>()
@@ -295,6 +296,7 @@ final class VolumeViewModel: ObservableObject {
         muteRestoreVolumes[processID] = nil
         armedProcessIDs.remove(processID)
         volumeReadTasks.removeValue(forKey: processID)?.cancel()
+        volumeReadIDs[processID] = nil
         nativeWriteTasks.removeValue(forKey: processID)?.cancel()
         nativeWriteIDs[processID] = nil
         if let task = pendingTasks.removeValue(forKey: processID), task.isRunning {
@@ -454,19 +456,23 @@ final class VolumeViewModel: ObservableObject {
         let bundleID = app.bundleIdentifier
         let processID = app.id
         let identity = sessionIdentity(for: app)
+        let readID = UUID()
+        volumeReadIDs[processID] = readID
         volumeReadTasks[app.id] = Task.detached(priority: .utility) { [weak self] in
             let volume = AppVolumeAdapter.currentVolume(bundleID: bundleID)
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
-                self?.applyReadVolume(volume, processID: processID, identity: identity)
+                self?.applyReadVolume(volume, processID: processID, identity: identity, readID: readID)
             }
         }
     }
 
-    private func applyReadVolume(_ volume: Double?, processID: pid_t, identity: SessionIdentity) {
+    private func applyReadVolume(_ volume: Double?, processID: pid_t, identity: SessionIdentity, readID: UUID) {
+        guard volumeReadIDs[processID] == readID,
+              sessionIdentities[processID] == identity else { return }
         volumeReadTasks[processID] = nil
-        guard sessionIdentities[processID] == identity,
-              applications.contains(where: { $0.id == processID }),
+        volumeReadIDs[processID] = nil
+        guard applications.contains(where: { $0.id == processID }),
               !editingApplicationIDs.contains(processID),
               let volume else { return }
         applicationVolumes[processID] = volume
