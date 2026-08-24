@@ -72,6 +72,60 @@ expect(
     "默认设置不能沿用上一次应用的增益"
 )
 
+let firstSession = SessionIdentity(processID: 42, bundleIdentifier: "com.example.first")
+let replacementSession = SessionIdentity(processID: 42, bundleIdentifier: "com.example.replacement")
+
+expect(
+    VolumePolicy.sessionGain(
+        existingGain: 0.42,
+        previousIdentity: firstSession,
+        identity: firstSession,
+        initialGain: 0.75
+    ) == 0.42,
+    "同一应用会话的当前增益不能被刷新覆盖"
+)
+expect(
+    VolumePolicy.sessionGain(
+        existingGain: 0.42,
+        previousIdentity: firstSession,
+        identity: replacementSession,
+        initialGain: 0.60
+    ) == 0.60,
+    "相同 PID 的不同 bundle 不能继承旧会话增益"
+)
+expect(VolumePolicy.fallbackGain(candidates: [0, 0.50]) == 0.50, "恢复必须尊重非静音候选")
+expect(VolumePolicy.fallbackGain(candidates: [0, 0]) == 0.75, "全零候选必须回到 75%")
+
+let muteFromFortyTwo = VolumePolicy.toggleMute(
+    currentGain: 0.42,
+    restoreGain: nil,
+    fallbackGain: 0.75
+)
+expect(muteFromFortyTwo.targetGain == 0, "42% 静音目标必须是 0%")
+expect(muteFromFortyTwo.nextRestoreGain == 0.42, "静音必须记录 42%")
+expect(muteFromFortyTwo.restoreGain(afterWriteSucceeded: false) == nil, "失败不能遗留恢复值")
+
+let restoreToFortyTwo = VolumePolicy.toggleMute(
+    currentGain: 0,
+    restoreGain: 0.42,
+    fallbackGain: 0.75
+)
+expect(restoreToFortyTwo.targetGain == 0.42, "恢复必须回到 42%")
+expect(restoreToFortyTwo.nextRestoreGain == nil, "成功恢复后必须清除恢复值")
+expect(restoreToFortyTwo.restoreGain(afterWriteSucceeded: false) == 0.42, "失败必须保留恢复值")
+
+let restoreWithoutHistory = VolumePolicy.toggleMute(
+    currentGain: 0,
+    restoreGain: nil,
+    fallbackGain: 0.50
+)
+expect(restoreWithoutHistory.targetGain == 0.50, "没有记录时必须使用回退值")
+expect(VolumePolicy.isMuted(0.000_1), "阈值本身必须视为静音")
+expect(!VolumePolicy.isMuted(0.000_11), "阈值以上必须视为非静音")
+expect(VolumePolicy.shouldPersist(gain: 0.42, intent: .sliderCommit), "非零滑杆值可记忆")
+expect(!VolumePolicy.shouldPersist(gain: 0, intent: .sliderCommit), "滑到 0% 不能覆盖记忆")
+expect(!VolumePolicy.shouldPersist(gain: 0.42, intent: .temporaryMute), "按钮恢复不能改写记忆")
+
 expect(
     ActiveAudioGrouping.visibleProcessIDs(from: [
         .init(pid: 10, objectID: 4, isRunningOutput: false),
