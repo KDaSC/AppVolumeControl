@@ -61,5 +61,8 @@ Results: `0.7.0`, `8`, and `AppVolumeControl.zip: OK`.
 | `AppVolumeControl.app/Contents/MacOS/AppVolumeControl` | **385,872 bytes** · 376.83 KiB · 0.3680 MiB |
 | `AppVolumeControl.app` 磁盘占用 / disk usage | **388 KiB** · 0.3789 MiB |
 
-SHA-256：`1b72d4920164e516ca425fb6832950fcaeec9e7cfcc9d5aeef0b4ae43dbf57a3`。<br>
-SHA-256: `1b72d4920164e516ca425fb6832950fcaeec9e7cfcc9d5aeef0b4ae43dbf57a3`.
+归档条目时间戳已固定；相同输入的重复构建会生成相同的 SHA-256。<br>
+Archive entry timestamps are fixed; repeated builds from the same inputs produce the same SHA-256.
+
+SHA-256（确定性归档 / deterministic archive）：`1714adfc9ccce8b8c4329045beab2d0f26a95077803293839cd599537741861f`。<br>
+SHA-256 (deterministic archive): `1714adfc9ccce8b8c4329045beab2d0f26a95077803293839cd599537741861f`.

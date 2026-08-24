@@ -82,6 +82,8 @@ codesign --force --sign "$SIGNING_IDENTITY" "$STAGED_APP_DIR" >/dev/null
 # after signing. Strip all attached attributes once more before verification.
 xattr -cr "$STAGED_APP_DIR" 2>/dev/null || true
 codesign --verify --deep --strict "$STAGED_APP_DIR"
+# ZIP stores entry mtimes; normalize them after signing for a reproducible archive checksum.
+find "$STAGED_APP_DIR" -exec touch -h -t 200001010000 {} +
 
 rm -rf "$APP_DIR"
 ditto --norsrc "$STAGED_APP_DIR" "$APP_DIR"
