@@ -506,6 +506,9 @@ final class VolumeViewModel: ObservableObject {
         guard app.canControlVolume else { return }
         let snappedValue = BaselineSnapper.value(value, baseline: baseline(for: app))
         applicationVolumes[app.id] = snappedValue
+        if snappedValue > VolumePolicy.muteThreshold {
+            muteRestoreVolumes[app.id] = nil
+        }
         if app.controlKind == .processTap {
             processGainManager.updateGain(for: app.id, value: snappedValue)
         } else {
@@ -581,42 +584,69 @@ final class VolumeViewModel: ObservableObject {
         attachmentAllowed(for: app)
     }
 
-    func setAppVolume(_ value: Double, for app: AudioApplication) {
-        guard app.canControlVolume else { return }
-        let clampedValue = min(max(value, 0), 1)
-        applicationVolumes[app.id] = clampedValue
+    func setAppVolume(
+        _ value: Double,
+        for app: AudioApplication,
+        intent: GainWriteIntent = .sliderCommit,
+        completion: (@MainActor (Bool) -> Void)? = nil
+    ) {
+        guard app.canControlVolume else {
+            completion?(false)
+            return
+        }
+        let gain = VolumePolicy.clamped(value)
+        applicationVolumes[app.id] = gain
 
         if app.controlKind == .processTap {
-            settingsStore.storeGain(clampedValue, for: app.bundleIdentifier)
-            processGainManager.updateGain(for: app.id, value: clampedValue)
+            if VolumePolicy.shouldPersist(gain: gain, intent: intent) {
+                settingsStore.storeGain(gain, for: app.bundleIdentifier)
+            }
+            processGainManager.updateGain(for: app.id, value: gain)
             monitorProcessTap()
+            completion?(true)
             return
         }
 
-        writeNativeVolume(clampedValue, for: app, delay: 0)
+        writeNativeVolume(gain, for: app, delay: 0, completion: completion)
     }
 
-    private func writeNativeVolume(_ value: Double, for app: AudioApplication, delay: TimeInterval) {
+    private func writeNativeVolume(
+        _ value: Double,
+        for app: AudioApplication,
+        delay: TimeInterval,
+        completion: (@MainActor (Bool) -> Void)? = nil
+    ) {
         guard app.controlKind == .appleScript,
               let script = AppVolumeAdapter.script(
                 bundleID: app.bundleIdentifier,
                 percent: Int((value * 100).rounded()),
                 normalizedValue: Float(value)
-              ) else { return }
+              ) else {
+            completion?(false)
+            return
+        }
 
+        let processID = app.id
+        let writeID = UUID()
+        let identity = sessionIdentity(for: app)
+        volumeReadTasks.removeValue(forKey: processID)?.cancel()
+        volumeReadIDs[processID] = nil
         nativeWriteTasks.removeValue(forKey: app.id)?.cancel()
+        nativeWriteIDs[processID] = writeID
         if let pendingTask = pendingTasks.removeValue(forKey: app.id), pendingTask.isRunning {
             pendingTask.terminate()
         }
 
-        let processID = app.id
         let confirmed = confirmedApplicationVolumes[processID]
         let requestedValue = value
         let writeTask = Task { @MainActor [weak self] in
             if delay > 0 {
                 try? await Task.sleep(for: .seconds(delay))
             }
-            guard let self, !Task.isCancelled else { return }
+            guard let self,
+                  !Task.isCancelled,
+                  self.nativeWriteIDs[processID] == writeID,
+                  self.sessionIdentities[processID] == identity else { return }
             self.nativeWriteTasks[processID] = nil
 
             let task = Process()
@@ -629,6 +659,8 @@ final class VolumeViewModel: ObservableObject {
                 let succeeded = finishedTask.terminationStatus == 0
                 Task { @MainActor [weak self] in
                     guard let self,
+                          self.nativeWriteIDs[processID] == writeID,
+                          self.sessionIdentities[processID] == identity,
                           let currentTask = self.pendingTasks[processID],
                           ObjectIdentifier(currentTask) == taskIdentifier else { return }
                     self.pendingTasks[processID] = nil
@@ -637,19 +669,51 @@ final class VolumeViewModel: ObservableObject {
                     } else if let confirmed {
                         self.applicationVolumes[processID] = confirmed
                     }
+                    self.nativeWriteIDs[processID] = nil
+                    completion?(succeeded)
                 }
             }
             self.pendingTasks[processID] = task
             do {
                 try task.run()
             } catch {
+                guard self.nativeWriteIDs[processID] == writeID,
+                      self.sessionIdentities[processID] == identity else { return }
                 self.pendingTasks[processID] = nil
                 if let confirmed {
                     self.applicationVolumes[processID] = confirmed
                 }
+                self.nativeWriteIDs[processID] = nil
+                completion?(false)
             }
         }
         nativeWriteTasks[processID] = writeTask
+    }
+
+    func toggleMute(for app: AudioApplication) {
+        guard sliderEnabled(for: app) else { return }
+        editingApplicationIDs.remove(app.id)
+        let identity = sessionIdentity(for: app)
+        let fallback = app.controlKind == .processTap
+            ? VolumePolicy.fallbackGain(candidates: [
+                settingsStore.resolvedGain(for: app.bundleIdentifier),
+                settingsStore.settings.defaultOutputGain
+            ])
+            : VolumePolicy.defaultLevel
+        let transition = VolumePolicy.toggleMute(
+            currentGain: volumeValue(for: app),
+            restoreGain: muteRestoreVolumes[app.id],
+            fallbackGain: fallback
+        )
+        muteRestoreVolumes[app.id] = transition.nextRestoreGain
+        setAppVolume(transition.targetGain, for: app, intent: .temporaryMute) { [weak self] succeeded in
+            guard let self, self.sessionIdentities[app.id] == identity else { return }
+            self.muteRestoreVolumes[app.id] = transition.restoreGain(afterWriteSucceeded: succeeded)
+        }
+    }
+
+    func isMuted(_ app: AudioApplication) -> Bool {
+        VolumePolicy.isMuted(volumeValue(for: app))
     }
 
     deinit {
@@ -741,11 +805,26 @@ struct AppVolumeRow: View {
                         ? "控制该应用的系统级输出增益"
                         : "拖到基准线前后 3% 会轻微吸附"
                 )
+                .accessibilityLabel(Text(
+                    app.controlKind == .processTap ? "\(app.name) 系统级输出增益" : "\(app.name) 音量"
+                ))
+                .accessibilityValue(Text(model.volumeText(for: app)))
 
                 Text(model.volumeText(for: app))
                     .font(.caption2)
                     .monospacedDigit()
                     .frame(width: 34, alignment: .trailing)
+
+                Button {
+                    model.toggleMute(for: app)
+                } label: {
+                    Image(systemName: model.isMuted(app) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.borderless)
+                .help(model.isMuted(app) ? "恢复 \(app.name) 音量" : "静音 \(app.name)")
+                .accessibilityLabel(Text(model.isMuted(app) ? "恢复 \(app.name) 音量" : "静音 \(app.name)"))
+                .accessibilityHint(Text("只影响这个应用的当前音频会话"))
             } else {
                 if app.controlKind == .processTap && !model.independentGainEnabled(for: app) {
                     Button(AudioApplicationStatus.enableProcessGainText) {
