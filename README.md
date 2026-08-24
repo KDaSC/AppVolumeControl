@@ -3,18 +3,19 @@
 轻量级的原生 macOS 菜单栏工具，用于查看并控制正在输出声音的应用。<br>
 Native macOS menu bar utility for discovering and controlling apps that are currently producing audio.
 
-## 0.6.0 版本 / Release
+## 0.7.0 版本 / Release
 
 | 项目 / Item | 实际大小 / Size |
 | --- | ---: |
-| 下载包 `AppVolumeControl.zip` / Download archive | **178,626 bytes** · 174.44 KiB · 0.1786 MB |
-| SHA-256 文件 / Checksum file | **149 bytes** · 0.1455 KiB · 0.000149 MB |
-| 解压后的 App 磁盘占用 / Unpacked app disk usage | **约 636 KiB** · 0.62 MiB |
+| 下载包 `AppVolumeControl.zip` / Download archive | **194,548 bytes** · 189.99 KiB · 0.1855 MiB |
+| SHA-256 文件 / Checksum file | **87 bytes** · 0.08 KiB · 0.0001 MiB |
+| `AppVolumeControl` 二进制 / Executable | **706,464 bytes** · 689.91 KiB · 0.6737 MiB |
+| 解压后的 App 磁盘占用 / Unpacked app disk usage | **700 KiB** · 0.6836 MiB |
 
-以上数值来自 v0.6.0 实际发布资产；ZIP 是推荐下载格式。<br>
-The values above are measured from the v0.6.0 release assets; the ZIP is the recommended download format.
+以上数值来自本地构建的 v0.7.0 / Build 8 资产；ZIP 是推荐下载格式。<br>
+The values above are measured from locally built v0.7.0 / Build 8 assets; the ZIP is the recommended download format.
 
-**下载 / Download:** [v0.6.0 Pre-release](https://github.com/KDaSC/AppVolumeControl/releases/tag/v0.6.0)
+**下载 / Download:** [v0.7.0 Pre-release](https://github.com/KDaSC/AppVolumeControl/releases/tag/v0.7.0)
 
 ## 支持平台 / Platform
 
@@ -51,15 +52,25 @@ An `.app` copied directly by the `Documents` file provider may carry extra metad
   The panel shrinks or scrolls based on app count, uses the native status-bar anchor, and supports Hidden Bar, no Hidden Bar, and multi-display setups.
 - **实时性 / Real-time behavior**：音频回调使用无锁原子目标；停止路径等待 CoreAudio 清理完成，避免重复接管和蓝牙输出无声。<br>
   Audio callbacks use lock-free atomic targets; shutdown waits for CoreAudio cleanup to avoid duplicate handoff and silent Bluetooth output.
+- **可逆静音 / Reversible mute**：静音会保留本次会话中原先的非零增益；取消静音会恢复该值。<br>
+  Mute retains the previous non-zero gain in the current session; unmuting restores it.
+- **瞬时零值 / Transient zero**：滑杆降到 0% 只是当前会话的瞬时状态，不会把 0% 作为可恢复的非零增益保存。<br>
+  Moving the slider to 0% is a transient current-session state; 0% is not retained as the non-zero value to restore.
+- **允许与已连接 / Allowed versus connected**：设置允许独立增益不等于已经建立 Process Tap；只有连接后的会话才实际改变输出增益。<br>
+  Allowing independent gain in settings does not mean a Process Tap is connected; only a connected session actually changes output gain.
 
 ## 能力边界 / Boundaries
 
 - macOS 公共 SDK 没有适用于任意应用的通用“独立音量”接口；Process Tap 提供的是系统级**输出增益**，不是应用或网页播放器的内部音量。<br>
   The public macOS SDK has no universal independent-volume API for arbitrary apps; Process Tap provides system-level **output gain**, not the app or web player's internal volume.
-- 浏览器标签页级音量需要浏览器扩展；0.6.0 不会伪造该能力。<br>
-  Per-tab browser volume requires a browser extension; 0.6.0 does not emulate that capability.
+- Process Tap 按应用进程的输出工作，不能读取或控制任意应用内部播放器的音量；它也不是网页、窗口或标签页级控制。<br>
+  Process Tap works on an app process's output and cannot read or control an arbitrary app's internal player volume; it is not webpage-, window-, or tab-level control.
+- 浏览器标签页级音量需要浏览器扩展；0.7.0 不会伪造该能力。<br>
+  Per-tab browser volume requires a browser extension; 0.7.0 does not emulate that capability.
 - 增益只在应用实际播放音频时生效；网页音频仍归属于浏览器进程，无法仅靠 macOS 音频 API 可靠区分网页名称。<br>
   Gain applies while an app is actually playing audio; web audio remains owned by the browser process and cannot be reliably split by webpage name using macOS audio APIs alone.
+- 使用 AppleScript 音量接口的应用若在恢复前退出，恢复命令无法发送，该应用可能保持在 0%。<br>
+  If an app using an AppleScript volume interface exits before restore, the restore command cannot be sent and that app may remain at 0%.
 
 ## 从源码构建 / Build from source
 
@@ -70,6 +81,13 @@ open outputs/AppVolumeControl.app
 
 构建会生成 `outputs/AppVolumeControl.zip` 及 `outputs/AppVolumeControl.zip.sha256`。<br>
 The build creates `outputs/AppVolumeControl.zip` and `outputs/AppVolumeControl.zip.sha256`.
+
+校验文件只写入文件名，因此下载后把 ZIP 与 `.sha256` 放在同一目录即可直接校验：<br>
+The checksum file contains only the archive filename, so after download place it beside the ZIP and verify directly:
+
+```sh
+shasum -a 256 -c AppVolumeControl.zip.sha256
+```
 
 运行测试 / Run tests:
 
@@ -89,5 +107,5 @@ APP_VOLUME_SIGNING_IDENTITY="Developer ID Application: ..." ./scripts/build-app.
 
 ## 项目状态 / Project status
 
-当前 `v0.6.0` 是预发布版本，适合 Apple Silicon Mac 的本地试用。<br>
-`v0.6.0` is a pre-release intended for local use on Apple Silicon Macs.
+当前 `v0.7.0 / Build 8` 是预发布版本，适合 Apple Silicon Mac 的本地试用；它以 ad-hoc 方式签名，尚未经过 Developer ID 公证。<br>
+`v0.7.0 / Build 8` is a pre-release intended for local use on Apple Silicon Macs; it is ad-hoc signed and not Developer ID notarized.
