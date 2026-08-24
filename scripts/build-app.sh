@@ -39,6 +39,8 @@ fi
 mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/AppVolumeControl" "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl"
 chmod +x "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl"
+# Remove only local symbols before signing; dynamic-link symbols stay intact.
+/usr/bin/strip -x "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl"
 
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

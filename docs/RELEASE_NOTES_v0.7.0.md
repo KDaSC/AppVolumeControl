@@ -23,8 +23,8 @@
   Process Tap applies gain to an app process's output; it is not an internal volume control for arbitrary apps, players, or webpages, and it does not provide window- or browser-tab-level control.
 - 浏览器标签页级音量需要浏览器扩展；网页音频仍归属于浏览器进程，无法仅用 macOS 音频 API 可靠地按网页名称拆分。<br>
   Per-tab browser volume requires a browser extension; web audio remains owned by the browser process and cannot be reliably separated by webpage name using macOS audio APIs alone.
-- 对采用 AppleScript 音量接口的应用，若应用在恢复前退出，恢复命令无法发送，应用可能保持在 0%。<br>
-  For apps using AppleScript volume interfaces, if the app exits before restore, the restore command cannot be sent and the app may remain at 0%.
+- 对采用 AppleScript 音量接口的受控应用或 AppVolumeControl，任一方若在恢复前退出，恢复命令无法发送或完成，受控应用可能保持在 0%。<br>
+  If either an AppleScript-controlled app or AppVolumeControl exits before restore, the restore command cannot be sent or completed and the controlled app may remain at 0%.
 - 本构建为 ad-hoc 签名，未经过 Developer ID 公证；它是本地预发布版本。<br>
   This build is ad-hoc signed and not Developer ID notarized; it is a local pre-release.
 
@@ -56,10 +56,10 @@ Results: `0.7.0`, `8`, and `AppVolumeControl.zip: OK`.
 
 | 资产 / Asset | 实际大小 / Measured size |
 | --- | ---: |
-| `AppVolumeControl.zip` | **194,548 bytes** · 189.99 KiB · 0.1855 MiB |
+| `AppVolumeControl.zip` | **138,838 bytes** · 135.58 KiB · 0.1324 MiB |
 | `AppVolumeControl.zip.sha256` | **87 bytes** · 0.08 KiB · 0.0001 MiB |
-| `AppVolumeControl.app/Contents/MacOS/AppVolumeControl` | **706,464 bytes** · 689.91 KiB · 0.6737 MiB |
-| `AppVolumeControl.app` 磁盘占用 / disk usage | **700 KiB** · 0.6836 MiB |
+| `AppVolumeControl.app/Contents/MacOS/AppVolumeControl` | **385,872 bytes** · 376.83 KiB · 0.3680 MiB |
+| `AppVolumeControl.app` 磁盘占用 / disk usage | **388 KiB** · 0.3789 MiB |
 
-SHA-256：`734572cb100ac379a69877ac060dce54300d1bd1ac1e37b47b7658460f3b32bf`。<br>
-SHA-256: `734572cb100ac379a69877ac060dce54300d1bd1ac1e37b47b7658460f3b32bf`.
+SHA-256：`1b72d4920164e516ca425fb6832950fcaeec9e7cfcc9d5aeef0b4ae43dbf57a3`。<br>
+SHA-256: `1b72d4920164e516ca425fb6832950fcaeec9e7cfcc9d5aeef0b4ae43dbf57a3`.

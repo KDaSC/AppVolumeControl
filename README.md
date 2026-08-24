@@ -7,10 +7,10 @@ Native macOS menu bar utility for discovering and controlling apps that are curr
 
 | 项目 / Item | 实际大小 / Size |
 | --- | ---: |
-| 下载包 `AppVolumeControl.zip` / Download archive | **194,548 bytes** · 189.99 KiB · 0.1855 MiB |
+| 下载包 `AppVolumeControl.zip` / Download archive | **138,838 bytes** · 135.58 KiB · 0.1324 MiB |
 | SHA-256 文件 / Checksum file | **87 bytes** · 0.08 KiB · 0.0001 MiB |
-| `AppVolumeControl` 二进制 / Executable | **706,464 bytes** · 689.91 KiB · 0.6737 MiB |
-| 解压后的 App 磁盘占用 / Unpacked app disk usage | **700 KiB** · 0.6836 MiB |
+| `AppVolumeControl` 二进制 / Executable | **385,872 bytes** · 376.83 KiB · 0.3680 MiB |
+| 解压后的 App 磁盘占用 / Unpacked app disk usage | **388 KiB** · 0.3789 MiB |
 
 以上数值来自本地构建的 v0.7.0 / Build 8 资产；ZIP 是推荐下载格式。<br>
 The values above are measured from locally built v0.7.0 / Build 8 assets; the ZIP is the recommended download format.
@@ -69,8 +69,8 @@ An `.app` copied directly by the `Documents` file provider may carry extra metad
   Per-tab browser volume requires a browser extension; 0.7.0 does not emulate that capability.
 - 增益只在应用实际播放音频时生效；网页音频仍归属于浏览器进程，无法仅靠 macOS 音频 API 可靠区分网页名称。<br>
   Gain applies while an app is actually playing audio; web audio remains owned by the browser process and cannot be reliably split by webpage name using macOS audio APIs alone.
-- 使用 AppleScript 音量接口的应用若在恢复前退出，恢复命令无法发送，该应用可能保持在 0%。<br>
-  If an app using an AppleScript volume interface exits before restore, the restore command cannot be sent and that app may remain at 0%.
+- 使用 AppleScript 音量接口的受控应用或 AppVolumeControl 任一方若在恢复前退出，恢复命令无法发送或完成，受控应用可能保持在 0%。<br>
+  If either an AppleScript-controlled app or AppVolumeControl exits before restore, the restore command cannot be sent or completed and the controlled app may remain at 0%.
 
 ## 从源码构建 / Build from source
 
