@@ -154,6 +154,18 @@ expect(
     "系统音频捕获不能被屏幕录制预检阻断"
 )
 expect(
+    ProcessGainPlan.attachmentAllowed(explicitlyArmed: true, automaticallyAttachNewApps: false),
+    "手动启用必须允许接管"
+)
+expect(
+    ProcessGainPlan.attachmentAllowed(explicitlyArmed: false, automaticallyAttachNewApps: true),
+    "自动设置必须允许接管"
+)
+expect(
+    !ProcessGainPlan.attachmentAllowed(explicitlyArmed: false, automaticallyAttachNewApps: false),
+    "全部关闭时不能接管"
+)
+expect(
     ProcessGainPlan.action(
         isOutputActive: true,
         isAttachmentAllowed: true,

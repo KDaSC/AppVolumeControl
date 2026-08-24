@@ -14,6 +14,13 @@ public enum ProcessGainPlan {
         shouldRun(isOutputActive: isOutputActive, gain: gain)
     }
 
+    public static func attachmentAllowed(
+        explicitlyArmed: Bool,
+        automaticallyAttachNewApps: Bool
+    ) -> Bool {
+        explicitlyArmed || automaticallyAttachNewApps
+    }
+
     public static func action(
         isOutputActive: Bool,
         isAttachmentAllowed: Bool = true,
