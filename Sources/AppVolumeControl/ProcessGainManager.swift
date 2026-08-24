@@ -5,6 +5,7 @@ import CoreAudio
 final class ProcessGainManager {
     private var engines: [pid_t: ProcessTapEngine] = [:]
     private var targetObjectIDs: [pid_t: [AudioObjectID]] = [:]
+    private var lifecycleRequestIDs: [pid_t: UUID] = [:]
 
     func reconcile(
         applications: [AudioApplication],
@@ -54,6 +55,7 @@ final class ProcessGainManager {
             case let .update(updatedGain):
                 engines[app.id]?.setVolume(Float(updatedGain))
             case let .start(startObjectIDs, startGain):
+                lifecycleRequestIDs[app.id] = UUID()
                 let engine = engines[app.id] ?? {
                     let newEngine = ProcessTapEngine()
                     engines[app.id] = newEngine
@@ -99,9 +101,26 @@ final class ProcessGainManager {
     }
 
     func stop(processID: pid_t) {
-        engines[processID]?.stop()
-        engines[processID] = nil
         targetObjectIDs[processID] = nil
+        let requestID = UUID()
+        lifecycleRequestIDs[processID] = requestID
+        guard let engine = engines[processID] else {
+            lifecycleRequestIDs[processID] = nil
+            return
+        }
+        engine.stop { [weak self, weak engine] in
+            Task { @MainActor [weak self, weak engine] in
+                guard let self, let engine else { return }
+                let shouldRelease = ProcessGainPlan.shouldReleaseEngine(
+                    cleanupRequestIsCurrent: self.lifecycleRequestIDs[processID] == requestID,
+                    engineIsCurrent: self.engines[processID] === engine,
+                    hasReplacementTarget: self.targetObjectIDs[processID] != nil
+                )
+                guard shouldRelease else { return }
+                self.engines[processID] = nil
+                self.lifecycleRequestIDs[processID] = nil
+            }
+        }
     }
 
     func stopAll() {
@@ -110,5 +129,6 @@ final class ProcessGainManager {
         }
         engines.removeAll()
         targetObjectIDs.removeAll()
+        lifecycleRequestIDs.removeAll()
     }
 }

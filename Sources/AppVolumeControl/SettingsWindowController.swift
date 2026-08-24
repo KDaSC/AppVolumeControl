@@ -3,8 +3,14 @@ import SwiftUI
 
 @MainActor
 final class SettingsWindowController: NSWindowController {
-    init(store: VolumeSettingsStore) {
-        let view = SettingsView(store: store)
+    init(
+        store: VolumeSettingsStore,
+        onAutomaticAttachmentChange: @escaping @MainActor @Sendable (Bool) -> Void
+    ) {
+        let view = SettingsView(
+            store: store,
+            onAutomaticAttachmentChange: onAutomaticAttachmentChange
+        )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 430, height: 300),
             styleMask: [.titled, .closable],
@@ -23,6 +29,7 @@ final class SettingsWindowController: NSWindowController {
 
 private struct SettingsView: View {
     @ObservedObject var store: VolumeSettingsStore
+    let onAutomaticAttachmentChange: @MainActor @Sendable (Bool) -> Void
     @State private var showingClearConfirmation = false
 
     var body: some View {
@@ -40,7 +47,7 @@ private struct SettingsView: View {
             ), in: 0...1)
             Toggle("自动接管新应用", isOn: Binding(
                 get: { store.settings.automaticallyAttachNewApps },
-                set: { store.settings.automaticallyAttachNewApps = $0 }
+                set: { value in onAutomaticAttachmentChange(value) }
             ))
             Text("关闭时，新应用只显示正在输出，不改变原始声音路径。")
                 .font(.caption)

@@ -14,6 +14,25 @@ public enum ProcessGainPlan {
         shouldRun(isOutputActive: isOutputActive, gain: gain)
     }
 
+    public static func attachmentAllowed(
+        explicitlyArmed: Bool,
+        automaticallyAttachNewApps: Bool
+    ) -> Bool {
+        explicitlyArmed || automaticallyAttachNewApps
+    }
+
+    public static func automaticAttachmentChanged(from previous: Bool, to current: Bool) -> Bool {
+        previous != current
+    }
+
+    public static func shouldReleaseEngine(
+        cleanupRequestIsCurrent: Bool,
+        engineIsCurrent: Bool,
+        hasReplacementTarget: Bool
+    ) -> Bool {
+        cleanupRequestIsCurrent && engineIsCurrent && !hasReplacementTarget
+    }
+
     public static func action(
         isOutputActive: Bool,
         isAttachmentAllowed: Bool = true,

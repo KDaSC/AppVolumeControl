@@ -8,8 +8,8 @@ APP_DIR="$OUTPUT_DIR/AppVolumeControl.app"
 ARCHIVE_PATH="$OUTPUT_DIR/AppVolumeControl.zip"
 CHECKSUM_PATH="$ARCHIVE_PATH.sha256"
 SIGNING_IDENTITY="${APP_VOLUME_SIGNING_IDENTITY:-}"
-VERSION="0.6.0"
-BUILD_NUMBER="7"
+VERSION="0.7.0"
+BUILD_NUMBER="8"
 STAGING_DIR="$(mktemp -d)"
 STAGED_APP_DIR="$STAGING_DIR/AppVolumeControl.app"
 VERIFY_DIR=""
@@ -28,7 +28,7 @@ if [[ -z "$SIGNING_IDENTITY" ]]; then
 fi
 
 cd "$ROOT_DIR"
-swift build -c release
+swift build -j 1 -c release
 
 BINARY_ARCHS="$(lipo -archs "$BUILD_DIR/AppVolumeControl")"
 if [[ "$BINARY_ARCHS" != "arm64" ]]; then
@@ -39,6 +39,8 @@ fi
 mkdir -p "$STAGED_APP_DIR/Contents/MacOS" "$STAGED_APP_DIR/Contents/Resources"
 cp "$BUILD_DIR/AppVolumeControl" "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl"
 chmod +x "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl"
+# Remove only local symbols before signing; dynamic-link symbols stay intact.
+/usr/bin/strip -x "$STAGED_APP_DIR/Contents/MacOS/AppVolumeControl"
 
 cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -64,7 +66,7 @@ cat > "$STAGED_APP_DIR/Contents/Info.plist" <<PLIST
 	<key>LSMinimumSystemVersion</key>
 	<string>18.0</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>用于在用户授权后对应用音频施加独立输出增益，不改变系统总音量。</string>
+	<string>经用户授权后，对应用音频施加独立输出增益，不改变系统总音量。 / With your permission, applies per-app output gain without changing system volume.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>
@@ -80,6 +82,8 @@ codesign --force --sign "$SIGNING_IDENTITY" "$STAGED_APP_DIR" >/dev/null
 # after signing. Strip all attached attributes once more before verification.
 xattr -cr "$STAGED_APP_DIR" 2>/dev/null || true
 codesign --verify --deep --strict "$STAGED_APP_DIR"
+# ZIP stores entry mtimes; normalize them after signing for a reproducible archive checksum.
+find "$STAGED_APP_DIR" -exec touch -h -t 200001010000 {} +
 
 rm -rf "$APP_DIR"
 ditto --norsrc "$STAGED_APP_DIR" "$APP_DIR"
@@ -101,7 +105,10 @@ unzip -t "$ARCHIVE_PATH" >/dev/null
 VERIFY_DIR="$(mktemp -d)"
 /usr/bin/unzip -q "$ARCHIVE_PATH" -d "$VERIFY_DIR"
 codesign --verify --deep --strict "$VERIFY_DIR/AppVolumeControl.app"
-shasum -a 256 "$ARCHIVE_PATH" > "$CHECKSUM_PATH"
+(
+	cd "$OUTPUT_DIR"
+	shasum -a 256 "$(basename "$ARCHIVE_PATH")" > "$(basename "$CHECKSUM_PATH")"
+)
 
 echo "Built: $APP_DIR"
 echo "Archive: $ARCHIVE_PATH"
