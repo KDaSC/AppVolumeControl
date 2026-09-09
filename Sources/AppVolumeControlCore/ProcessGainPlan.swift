@@ -7,7 +7,7 @@ public enum ProcessGainPlan {
     }
 
     public static func shouldRun(isOutputActive: Bool, gain: Double) -> Bool {
-        isOutputActive && gain < 0.999
+        isOutputActive && abs(VolumePolicy.clamped(gain) - VolumePolicy.defaultLevel) > 0.000_001
     }
 
     public static func shouldStartSystemAudioCapture(isOutputActive: Bool, gain: Double) -> Bool {
