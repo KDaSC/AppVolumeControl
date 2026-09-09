@@ -3,6 +3,7 @@ import CoreAudio
 
 @MainActor
 final class ProcessGainManager {
+    var onStateChange: (() -> Void)?
     private var engines: [pid_t: ProcessTapEngine] = [:]
     private var targetObjectIDs: [pid_t: [AudioObjectID]] = [:]
     private var lifecycleRequestIDs: [pid_t: UUID] = [:]
@@ -53,30 +54,28 @@ final class ProcessGainManager {
             case .stop:
                 stop(processID: app.id)
             case let .update(updatedGain):
-                engines[app.id]?.setVolume(Float(updatedGain))
+                engines[app.id]?.setVolume(Float(VolumePolicy.outputGain(displayLevel: updatedGain)))
             case let .start(startObjectIDs, startGain):
                 lifecycleRequestIDs[app.id] = UUID()
                 let engine = engines[app.id] ?? {
-                    let newEngine = ProcessTapEngine()
+                    let newEngine = ProcessTapEngine { [weak self] in
+                        Task { @MainActor [weak self] in self?.onStateChange?() }
+                    }
                     engines[app.id] = newEngine
                     return newEngine
                 }()
                 targetObjectIDs[app.id] = startObjectIDs.map { AudioObjectID($0) }
-                engine.start(processObjectIDs: objectIDs, volume: Float(startGain))
+                engine.start(processObjectIDs: objectIDs, volume: Float(VolumePolicy.outputGain(displayLevel: startGain)))
             }
         }
     }
 
-    func retryAll(
-        applications: [AudioApplication],
-        gainFor: (AudioApplication) -> Double
-    ) {
+    func resetFailures() {
         targetObjectIDs.removeAll()
-        reconcile(applications: applications, gainFor: gainFor)
     }
 
     func updateGain(for processID: pid_t, value: Double) {
-        engines[processID]?.setVolume(Float(min(max(value, 0), 1)))
+        engines[processID]?.setVolume(Float(VolumePolicy.outputGain(displayLevel: value)))
     }
 
     func canEdit(_ app: AudioApplication) -> Bool {

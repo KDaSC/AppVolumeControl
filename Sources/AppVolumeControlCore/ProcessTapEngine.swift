@@ -23,7 +23,7 @@ public enum AsyncWorkOwnership {
 ///
 /// A process tap captures a process's output audio before the system mix,
 /// routes it through a private aggregate device, and lets this app apply a
-/// real gain (0...1) in the IO callback. Starting the aggregate device lets
+/// real gain (0...4/3) in the IO callback. Starting the aggregate device lets
 /// macOS request system-audio capture permission when it is needed.
 public final class ProcessTapEngine: @unchecked Sendable {
     private struct State {
@@ -45,7 +45,11 @@ public final class ProcessTapEngine: @unchecked Sendable {
     private var stackedInputOffset = 0
     private var rampCoefficient: Float = 0.0007
 
-    public init() {}
+    private let onStateChange: @Sendable () -> Void
+
+    public init(onStateChange: @escaping @Sendable () -> Void = {}) {
+        self.onStateChange = onStateChange
+    }
 
     public var volume: Float {
         get { realtimeGain.target }
@@ -65,14 +69,15 @@ public final class ProcessTapEngine: @unchecked Sendable {
     public func start(processObjectIDs: [AudioObjectID], volume: Float) {
         let objects = Array(Set(processObjectIDs)).sorted()
         guard !objects.isEmpty else { return }
+        // 立即写入目标；异步启动不得覆盖后续静音或滑杆更新。 / Latest user target wins.
+        self.volume = volume
         AsyncWorkOwnership.enqueue(owner: self, on: queue) { engine in
             if engine.isActive, engine.processObjectIDs == objects {
-                engine.volume = volume
                 return
             }
             engine._stopInternal()
             engine.processObjectIDs = objects
-            engine._startInternal(processObjectIDs: objects, volume: volume)
+            engine._startInternal(processObjectIDs: objects)
         }
     }
 
@@ -93,12 +98,11 @@ public final class ProcessTapEngine: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
-    private func _startInternal(processObjectIDs: [AudioObjectID], volume: Float) {
+    private func _startInternal(processObjectIDs: [AudioObjectID]) {
         guard #available(macOS 18, *) else {
             fail("需要 macOS 18 或更高版本")
             return
         }
-        self.volume = volume
         lock.withLock { $0.lastError = nil }
 
         let description = CATapDescription(stereoMixdownOfProcesses: processObjectIDs)
@@ -208,6 +212,7 @@ public final class ProcessTapEngine: @unchecked Sendable {
         }
 
         lock.withLock { $0.isActive = true }
+        onStateChange()
         registerOutputDeviceListener()
     }
 
@@ -236,6 +241,7 @@ public final class ProcessTapEngine: @unchecked Sendable {
         }
         deviceRestartPending = false
         lock.withLock { $0.isActive = false }
+        onStateChange()
     }
 
     private func fail(_ message: String) {
@@ -307,10 +313,9 @@ public final class ProcessTapEngine: @unchecked Sendable {
                           currentDevice != self.observedOutputDeviceID else { return }
                     self.observedOutputDeviceID = currentDevice
                     let objects = self.processObjectIDs
-                    let currentVolume = self.volume
                     self._stopInternal()
                     self.processObjectIDs = objects
-                    self._startInternal(processObjectIDs: objects, volume: currentVolume)
+                    self._startInternal(processObjectIDs: objects)
                 }
             }
         }

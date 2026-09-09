@@ -1,7 +1,7 @@
 public struct VolumeSettings: Codable, Equatable, Sendable {
     public static let defaultValue = VolumeSettings(
         defaultOutputGain: VolumePolicy.defaultLevel,
-        automaticallyAttachNewApps: false,
+        automaticallyAttachNewApps: true,
         rememberPerAppProcessTapGain: false
     )
 
@@ -11,7 +11,7 @@ public struct VolumeSettings: Codable, Equatable, Sendable {
 
     public init(
         defaultOutputGain: Double = VolumePolicy.defaultLevel,
-        automaticallyAttachNewApps: Bool = false,
+        automaticallyAttachNewApps: Bool = true,
         rememberPerAppProcessTapGain: Bool = false
     ) {
         self.defaultOutputGain = min(max(defaultOutputGain, 0), 1)

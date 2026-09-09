@@ -3,8 +3,8 @@ import SwiftUI
 
 @MainActor
 final class VolumeSettingsStore: ObservableObject {
-    private static let settingsKey = "volumeSettings.v4"
-    private static let gainKeyPrefix = "processTapGain."
+    private static let settingsKey = "volumeSettings.v5"
+    private static let gainKeyPrefix = "processTapLevel.v5."
 
     @Published var settings: VolumeSettings {
         didSet { persist() }
@@ -17,9 +17,23 @@ final class VolumeSettingsStore: ObservableObject {
         if let data = defaults.data(forKey: Self.settingsKey),
            let decoded = try? JSONDecoder().decode(VolumeSettings.self, from: data) {
             settings = decoded
+        } else if let data = defaults.data(forKey: "volumeSettings.v4"),
+                  var legacy = try? JSONDecoder().decode(VolumeSettings.self, from: data) {
+            // 升级启用自动就绪；自定义衰减保留实际响度。 / Enable automatic readiness on upgrade.
+            legacy.automaticallyAttachNewApps = true
+            if legacy.defaultOutputGain != VolumePolicy.defaultLevel {
+                legacy.defaultOutputGain = VolumePolicy.displayLevel(legacyGain: legacy.defaultOutputGain)
+            }
+            settings = legacy
+            for (key, value) in defaults.dictionaryRepresentation() where key.hasPrefix("processTapGain.") {
+                guard let gain = value as? NSNumber else { continue }
+                let bundleID = String(key.dropFirst("processTapGain.".count))
+                defaults.set(VolumePolicy.displayLevel(legacyGain: gain.doubleValue), forKey: Self.gainKeyPrefix + bundleID)
+            }
         } else {
             settings = .defaultValue
         }
+        persist()
     }
 
     func resolvedGain(for bundleID: String) -> Double {

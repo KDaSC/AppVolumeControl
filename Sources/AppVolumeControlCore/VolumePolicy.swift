@@ -38,7 +38,19 @@ public enum VolumePolicy {
     public static let settingsSchemaVersion = 4
     public static let muteThreshold = 0.000_1
 
-    public static func clamped(_ gain: Double) -> Double { min(max(gain, 0), 1) }
+    public static func clamped(_ gain: Double) -> Double {
+        gain.isFinite ? min(max(gain, 0), 1) : defaultLevel
+    }
+
+    /// 界面刻度与实际倍率分离：75% 是原声。 / 75% display means unity gain.
+    public static func outputGain(displayLevel: Double) -> Double {
+        clamped(displayLevel) / defaultLevel
+    }
+
+    /// 保留旧版记忆值的实际响度。 / Preserve the amplitude of legacy saved gains.
+    public static func displayLevel(legacyGain: Double) -> Double {
+        clamped(legacyGain) * defaultLevel
+    }
     public static func isMuted(_ gain: Double) -> Bool { clamped(gain) <= muteThreshold }
 
     public static func sessionGain(

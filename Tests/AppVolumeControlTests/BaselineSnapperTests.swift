@@ -48,6 +48,13 @@ expect(
 )
 
 expect(VolumePolicy.defaultLevel == 0.75, "all default targets must be 75%")
+expect(VolumePolicy.outputGain(displayLevel: 0.75) == 1, "75% 必须保持原声")
+expect(VolumePolicy.outputGain(displayLevel: 0) == 0, "0% 必须静音")
+expect(abs(VolumePolicy.outputGain(displayLevel: 1) - 4.0 / 3.0) < 0.000001, "100% 必须约为原声 133%")
+expect(VolumePolicy.outputGain(displayLevel: .nan) == 1, "非法刻度回退原声")
+expect(VolumeSettings.defaultValue.automaticallyAttachNewApps, "新安装必须自动就绪")
+expect(!ProcessGainPlan.shouldRun(isOutputActive: true, gain: 0.75), "原声刻度不能建立不必要的 Tap")
+expect(ProcessGainPlan.shouldRun(isOutputActive: true, gain: 1), "100% 放大需要 Tap")
 expect(
     VolumePolicy.migratedProcessGain(stored: 1, previousSchemaVersion: 1) == 0.75,
     "the legacy 100% Douyin default must migrate to 75%"
@@ -170,19 +177,19 @@ expect(
     "tap targets must be unique and stable"
 )
 expect(
-    ProcessGainPlan.shouldRun(isOutputActive: true, gain: 0.75),
-    "有输出且增益低于 100% 时应启动进程增益"
+    ProcessGainPlan.shouldRun(isOutputActive: true, gain: 0.50),
+    "有输出且偏离原声刻度时应启动进程增益"
 )
 expect(
     !ProcessGainPlan.shouldRun(isOutputActive: false, gain: 0.75),
     "没有输出时不应启动进程增益"
 )
 expect(
-    !ProcessGainPlan.shouldRun(isOutputActive: true, gain: 1),
-    "100% 增益时不需要启动进程增益"
+    !ProcessGainPlan.shouldRun(isOutputActive: true, gain: 0.75),
+    "75% 原声刻度不需要启动进程增益"
 )
 expect(
-    ProcessGainPlan.shouldStartSystemAudioCapture(isOutputActive: true, gain: 0.75),
+    ProcessGainPlan.shouldStartSystemAudioCapture(isOutputActive: true, gain: 0.50),
     "系统音频捕获不能被屏幕录制预检阻断"
 )
 expect(
@@ -312,6 +319,20 @@ inputSamples.withUnsafeBufferPointer { input in
     }
 }
 expect(outputSamples == [0.5, 0.5, 0.5, 0.5], "实时增益必须在回调内立即应用新目标")
+for (level, expected) in [(0.75, Float(0.6)), (1.0, Float(0.8)), (0.0, Float(0))] {
+    let gain = RealtimeGain(initialValue: Float(VolumePolicy.outputGain(displayLevel: level)))
+    var source: Float = 0.6
+    var result: Float = 0
+    gain.process(input: &source, output: &result, count: 1, rampCoefficient: 1)
+    expect(abs(result - expected) < 0.00001, "显示刻度必须落实到真实样本倍率")
+}
+let boosted = RealtimeGain(initialValue: 100)
+var peaks: [Float] = [1, -1, 0.5, -0.5]
+var limited = [Float](repeating: 0, count: 4)
+boosted.process(input: &peaks, output: &limited, count: 4, rampCoefficient: 1)
+expect(limited[0] == 1 && limited[1] == -1, "增强峰值必须限制范围")
+expect(abs(limited[2] - 2.0 / 3.0) < 0.00001, "增强上限必须为 4/3")
+expect(abs(VolumePolicy.outputGain(displayLevel: VolumePolicy.displayLevel(legacyGain: 0.42)) - 0.42) < 0.00001, "旧记忆迁移应保持倍率")
 
 expect(
     AudioApplicationStatus.processGainText == "输出增益",
@@ -377,6 +398,23 @@ expect(
 )
 
 let noOpStopFinished = DispatchSemaphore(value: 0)
+// 阻塞生命周期队列，复现启动后立即静音；0 不指向任何真实音频。 / No real audio source.
+let racingEngine = ProcessTapEngine()
+let queueEntered = DispatchSemaphore(value: 0)
+let releaseQueue = DispatchSemaphore(value: 0)
+let raceFinished = DispatchSemaphore(value: 0)
+racingEngine.stop {
+    queueEntered.signal()
+    _ = releaseQueue.wait(timeout: .now() + 5)
+}
+expect(queueEntered.wait(timeout: .now() + 1) == .success, "lifecycle queue must be held")
+racingEngine.start(processObjectIDs: [0], volume: 0.4)
+racingEngine.setVolume(0)
+releaseQueue.signal()
+racingEngine.stop { raceFinished.signal() }
+expect(raceFinished.wait(timeout: .now() + 5) == .success, "invalid test source must clean up")
+expect(racingEngine.volume == 0, "queued startup must not overwrite a newer mute target")
+
 ProcessTapEngine().stop {
     noOpStopFinished.signal()
 }

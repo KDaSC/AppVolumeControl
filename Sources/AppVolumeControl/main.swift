@@ -5,7 +5,6 @@ import Darwin
 import SwiftUI
 
 enum VolumeControlKind: Equatable {
-    case appleScript
     case processTap
 }
 
@@ -161,85 +160,6 @@ enum ProcessTree {
     }
 }
 
-// MARK: - Application volume adapters
-
-enum AppVolumeAdapter {
-    static let supportedBundleIDs: Set<String> = [
-        "com.apple.Music",
-        "com.spotify.client",
-        "org.videolan.vlc",
-        "com.apple.QuickTimePlayerX"
-    ]
-
-    static func supports(_ bundleID: String) -> Bool {
-        supportedBundleIDs.contains(bundleID)
-    }
-
-    static func currentVolume(bundleID: String, timeout: TimeInterval = 2) -> Double? {
-        let script: String
-        switch bundleID {
-        case "com.apple.Music":
-            script = "tell application \"Music\" to get sound volume"
-        case "com.spotify.client":
-            script = "tell application \"Spotify\" to get sound volume"
-        case "org.videolan.vlc":
-            script = "tell application \"VLC\" to get audio volume"
-        case "com.apple.QuickTimePlayerX":
-            script = "tell application \"QuickTime Player\" to get sound volume of front document"
-        default:
-            return nil
-        }
-
-        let task = Process()
-        let output = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        task.arguments = ["-e", script]
-        task.standardOutput = output
-        task.standardError = Pipe()
-        do {
-            try task.run()
-            let deadline = Date().addingTimeInterval(timeout)
-            while task.isRunning, Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.02)
-            }
-            if task.isRunning {
-                task.terminate()
-                let terminationDeadline = Date().addingTimeInterval(0.25)
-                while task.isRunning, Date() < terminationDeadline {
-                    Thread.sleep(forTimeInterval: 0.01)
-                }
-                return nil
-            }
-        } catch {
-            return nil
-        }
-
-        guard task.terminationStatus == 0,
-              let raw = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8),
-              let value = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
-        switch bundleID {
-        case "org.videolan.vlc": return min(max(value / 1000, 0), 1)
-        case "com.apple.Music", "com.spotify.client": return min(max(value / 100, 0), 1)
-        default: return min(max(value, 0), 1)
-        }
-    }
-
-    static func script(bundleID: String, percent: Int, normalizedValue: Float) -> String? {
-        switch bundleID {
-        case "com.apple.Music":
-            return "tell application \"Music\" to set sound volume to \(percent)"
-        case "com.spotify.client":
-            return "tell application \"Spotify\" to set sound volume to \(percent)"
-        case "org.videolan.vlc":
-            return "tell application \"VLC\" to set audio volume to \(percent * 10)"
-        case "com.apple.QuickTimePlayerX":
-            return "tell application \"QuickTime Player\" to set sound volume of front document to \(normalizedValue)"
-        default:
-            return nil
-        }
-    }
-}
-
 // MARK: - View model
 
 @MainActor
@@ -248,21 +168,19 @@ final class VolumeViewModel: ObservableObject {
     @Published var applicationVolumes: [pid_t: Double] = [:]
     @Published var isRefreshing = false
 
-    private var pendingTasks: [pid_t: Process] = [:]
-    private var nativeWriteTasks: [pid_t: Task<Void, Never>] = [:]
-    private var volumeReadTasks: [pid_t: Task<Void, Never>] = [:]
-    private var volumeReadIDs: [pid_t: UUID] = [:]
     private var discoveryTask: Task<Void, Never>?
-    private var confirmedApplicationVolumes: [pid_t: Double] = [:]
+    private var refreshPending = false
+    private var inactiveCleanup: DispatchWorkItem?
+    private let audioObserver = AudioOutputObserver()
+    @Published private(set) var monitorMessage = "后台被动监听 · 75% 为原声"
+    var onApplicationsChanged: (() -> Void)?
+    let permissionController = AudioPermissionController()
     private var editingApplicationIDs = Set<pid_t>()
     private var inactiveSince: [pid_t: Date] = [:]
     private var sessionIdentities: [pid_t: SessionIdentity] = [:]
     private var muteRestoreVolumes: [pid_t: Double] = [:]
-    private var nativeWriteIDs: [pid_t: UUID] = [:]
     private let inactiveGrace: TimeInterval = 0.8
-    private var lastAudioProcessIDs = Set<pid_t>()
-    private var lastRunningOutputProcessIDs = Set<pid_t>()
-    let settingsStore = VolumeSettingsStore()
+    let settingsStore: VolumeSettingsStore
     private var armedProcessIDs = Set<pid_t>()
 
     private static let hiddenBundleIDs: Set<String> = [
@@ -274,6 +192,37 @@ final class VolumeViewModel: ObservableObject {
     ]
 
     private let processGainManager = ProcessGainManager()
+
+    init(defaults: UserDefaults = .standard) {
+        settingsStore = VolumeSettingsStore(defaults: defaults)
+        processGainManager.onStateChange = { [weak self] in self?.objectWillChange.send() }
+    }
+
+    func startMonitoring() {
+        audioObserver.start(onServiceRestart: { [weak self] in
+            self?.processGainManager.stopAll()
+        }) { [weak self] in
+            guard let self else { return }
+            self.monitorMessage = self.audioObserver.lastError.map { "监听异常（\($0)），请重新连接" }
+                ?? "后台被动监听 · 75% 为原声"
+            self.refresh()
+        }
+    }
+
+    func retryAudioControl() {
+        processGainManager.resetFailures()
+        startMonitoring()
+        refresh()
+    }
+
+    func stopMonitoring() {
+        audioObserver.stop()
+        inactiveCleanup?.cancel()
+        inactiveCleanup = nil
+        discoveryTask?.cancel()
+        refreshPending = false
+        isRefreshing = false
+    }
 
     private func sessionIdentity(for app: AudioApplication) -> SessionIdentity {
         SessionIdentity(processID: app.id, bundleIdentifier: app.bundleIdentifier)
@@ -292,25 +241,17 @@ final class VolumeViewModel: ObservableObject {
         settingsStore.settings.automaticallyAttachNewApps = value
         monitorProcessTap()
         objectWillChange.send()
-        refresh(readVolumes: false, forceDiscovery: true)
+        refresh()
     }
 
     private func clearSession(for processID: pid_t) {
         processGainManager.stop(processID: processID)
         applicationVolumes[processID] = nil
-        confirmedApplicationVolumes[processID] = nil
         editingApplicationIDs.remove(processID)
         inactiveSince[processID] = nil
         sessionIdentities[processID] = nil
         muteRestoreVolumes[processID] = nil
         armedProcessIDs.remove(processID)
-        volumeReadTasks.removeValue(forKey: processID)?.cancel()
-        volumeReadIDs[processID] = nil
-        nativeWriteTasks.removeValue(forKey: processID)?.cancel()
-        nativeWriteIDs[processID] = nil
-        if let task = pendingTasks.removeValue(forKey: processID), task.isRunning {
-            task.terminate()
-        }
     }
 
     private func isUserFacingApplication(_ app: NSRunningApplication, name: String, bundleID: String) -> Bool {
@@ -322,8 +263,8 @@ final class VolumeViewModel: ObservableObject {
         return !name.isEmpty
     }
 
-    func refresh(readVolumes: Bool = true, forceDiscovery: Bool = false) {
-        guard !isRefreshing else { return }
+    func refresh() {
+        guard !isRefreshing else { refreshPending = true; return }
         isRefreshing = true
         let runningApplications = Dictionary(
             uniqueKeysWithValues: NSWorkspace.shared.runningApplications.map { ($0.processIdentifier, $0) }
@@ -337,33 +278,24 @@ final class VolumeViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             self?.applyDiscovery(
                 audioProcesses: audioProcesses,
-                runningApplications: runningApplications,
-                forceDiscovery: forceDiscovery,
-                readVolumes: readVolumes
+                runningApplications: runningApplications
             )
         }
     }
 
-    private func applyDiscovery(
+    func applyDiscovery(
         audioProcesses: [CoreAudioSupport.ProcessInfo],
-        runningApplications: [pid_t: NSRunningApplication],
-        forceDiscovery: Bool,
-        readVolumes: Bool
+        runningApplications: [pid_t: NSRunningApplication]
     ) {
-        let audioProcessIDs = Set(audioProcesses.map(\.pid))
-        let runningOutputProcessIDs = Set(audioProcesses.filter(\.isRunningOutput).map(\.pid))
-        let now = Date()
-        let inactiveGraceExpired = inactiveSince.contains { now.timeIntervalSince($0.value) >= inactiveGrace }
-        if !readVolumes,
-           !forceDiscovery,
-           audioProcessIDs == lastAudioProcessIDs,
-           runningOutputProcessIDs == lastRunningOutputProcessIDs,
-           !inactiveGraceExpired {
+        defer {
             isRefreshing = false
-            return
+            onApplicationsChanged?()
+            if refreshPending {
+                refreshPending = false
+                refresh()
+            }
         }
-        lastAudioProcessIDs = audioProcessIDs
-        lastRunningOutputProcessIDs = runningOutputProcessIDs
+        let now = Date()
         var hosts: [pid_t: NSRunningApplication] = [:]
         var processObjectIDsByHost: [pid_t: [AudioObjectID]] = [:]
 
@@ -385,9 +317,8 @@ final class VolumeViewModel: ObservableObject {
                   let bundleID = app.bundleIdentifier,
                   bundleID != "com.codex.app-volume-control",
                   isUserFacingApplication(app, name: name, bundleID: bundleID) else { return nil }
-            let controlKind: VolumeControlKind? = AppVolumeAdapter.supports(bundleID)
-                ? .appleScript
-                : .processTap
+            // 所有应用共用相对输出刻度，保持播放器内部音量不变。 / One relative scale for every app.
+            let controlKind: VolumeControlKind? = .processTap
             let processObjectIDs = ActiveAudioGrouping.sortedObjectIDs(
                 processObjectIDsByHost[app.processIdentifier, default: []]
             )
@@ -451,43 +382,17 @@ final class VolumeViewModel: ObservableObject {
         for processID in Set(sessionIdentities.keys).subtracting(currentIDs) {
             clearSession(for: processID)
         }
+        inactiveCleanup?.cancel()
+        inactiveCleanup = nil
+        if let earliest = inactiveSince.values.min() {
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated { self?.refresh() }
+            }
+            inactiveCleanup = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.01, inactiveGrace - now.timeIntervalSince(earliest) + 0.02), execute: work)
+        }
         isRefreshing = false
         monitorProcessTap()
-
-        guard readVolumes else { return }
-        for app in applications where app.controlKind == .appleScript {
-            readVolumeAsync(for: app)
-        }
-    }
-
-    private func readVolumeAsync(for app: AudioApplication) {
-        guard VolumePolicy.nativeReadAllowed(hasActiveWrite: nativeWriteIDs[app.id] != nil) else { return }
-        volumeReadTasks[app.id]?.cancel()
-        let bundleID = app.bundleIdentifier
-        let processID = app.id
-        let identity = sessionIdentity(for: app)
-        let readID = UUID()
-        volumeReadIDs[processID] = readID
-        volumeReadTasks[app.id] = Task.detached(priority: .utility) { [weak self] in
-            let volume = AppVolumeAdapter.currentVolume(bundleID: bundleID)
-            guard !Task.isCancelled else { return }
-            await MainActor.run { [weak self] in
-                self?.applyReadVolume(volume, processID: processID, identity: identity, readID: readID)
-            }
-        }
-    }
-
-    private func applyReadVolume(_ volume: Double?, processID: pid_t, identity: SessionIdentity, readID: UUID) {
-        guard volumeReadIDs[processID] == readID,
-              sessionIdentities[processID] == identity else { return }
-        volumeReadTasks[processID] = nil
-        volumeReadIDs[processID] = nil
-        guard VolumePolicy.nativeReadAllowed(hasActiveWrite: nativeWriteIDs[processID] != nil),
-              applications.contains(where: { $0.id == processID }),
-              !editingApplicationIDs.contains(processID),
-              let volume else { return }
-        applicationVolumes[processID] = volume
-        confirmedApplicationVolumes[processID] = volume
     }
 
     func baseline(for app: AudioApplication) -> Double? {
@@ -496,8 +401,6 @@ final class VolumeViewModel: ObservableObject {
 
     func sliderEnabled(for app: AudioApplication) -> Bool {
         switch app.controlKind {
-        case .appleScript:
-            return applicationVolumes[app.id] != nil
         case .processTap:
             return attachmentAllowed(for: app) && processGainManager.canEdit(app)
         case nil:
@@ -520,11 +423,7 @@ final class VolumeViewModel: ObservableObject {
         if snappedValue > VolumePolicy.muteThreshold {
             muteRestoreVolumes[app.id] = nil
         }
-        if app.controlKind == .processTap {
-            processGainManager.updateGain(for: app.id, value: snappedValue)
-        } else {
-            writeNativeVolume(snappedValue, for: app, delay: 0.08)
-        }
+        processGainManager.updateGain(for: app.id, value: snappedValue)
     }
 
     func commitAppVolume(for app: AudioApplication) {
@@ -551,7 +450,7 @@ final class VolumeViewModel: ObservableObject {
         )
     }
 
-    // MARK: - Process tap (only after explicit user action or opt-in setting)
+    // MARK: - Process tap (automatic by default; manual opt-out remains available)
 
     func shutdownProcessTap() {
         processGainManager.stopAll()
@@ -560,6 +459,10 @@ final class VolumeViewModel: ObservableObject {
     func tapStatusText(for app: AudioApplication) -> String? {
         if app.controlKind == .processTap, !attachmentAllowed(for: app) {
             return AudioApplicationStatus.unarmedProcessGainText
+        }
+        if app.controlKind == .processTap,
+           !ProcessGainPlan.shouldRun(isOutputActive: true, gain: volumeValue(for: app)) {
+            return "自动就绪 · 75% 为原声"
         }
         return processGainManager.statusText(for: app)
     }
@@ -617,94 +520,6 @@ final class VolumeViewModel: ObservableObject {
             completion?(true)
             return
         }
-
-        writeNativeVolume(gain, for: app, delay: 0, completion: completion)
-    }
-
-    private func writeNativeVolume(
-        _ value: Double,
-        for app: AudioApplication,
-        delay: TimeInterval,
-        completion: (@MainActor (Bool) -> Void)? = nil
-    ) {
-        guard app.controlKind == .appleScript,
-              let script = AppVolumeAdapter.script(
-                bundleID: app.bundleIdentifier,
-                percent: Int((value * 100).rounded()),
-                normalizedValue: Float(value)
-              ) else {
-            completion?(false)
-            return
-        }
-
-        let processID = app.id
-        let writeID = UUID()
-        let identity = sessionIdentity(for: app)
-        volumeReadTasks.removeValue(forKey: processID)?.cancel()
-        volumeReadIDs[processID] = nil
-        nativeWriteTasks.removeValue(forKey: app.id)?.cancel()
-        nativeWriteIDs[processID] = writeID
-        if let pendingTask = pendingTasks.removeValue(forKey: app.id), pendingTask.isRunning {
-            pendingTask.terminate()
-        }
-
-        let confirmed = confirmedApplicationVolumes[processID]
-        let requestedValue = value
-        let writeTask = Task { @MainActor [weak self] in
-            if delay > 0 {
-                try? await Task.sleep(for: .seconds(delay))
-            }
-            guard let self,
-                  !Task.isCancelled,
-                  self.nativeWriteIDs[processID] == writeID,
-                  self.sessionIdentities[processID] == identity else { return }
-            self.nativeWriteTasks[processID] = nil
-
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            task.arguments = ["-e", script]
-            task.standardOutput = Pipe()
-            task.standardError = Pipe()
-            let taskIdentifier = ObjectIdentifier(task)
-            task.terminationHandler = { [weak self] finishedTask in
-                let succeeded = finishedTask.terminationStatus == 0
-                Task { @MainActor [weak self] in
-                    guard let self,
-                          self.nativeWriteIDs[processID] == writeID,
-                          self.sessionIdentities[processID] == identity,
-                          let currentTask = self.pendingTasks[processID],
-                          ObjectIdentifier(currentTask) == taskIdentifier else { return }
-                    self.pendingTasks[processID] = nil
-                    let resolvedGain = VolumePolicy.resolvedNativeWriteGain(
-                        requestedGain: requestedValue,
-                        confirmedGain: confirmed,
-                        succeeded: succeeded
-                    )
-                    self.applicationVolumes[processID] = resolvedGain
-                    self.confirmedApplicationVolumes[processID] = resolvedGain
-                    self.nativeWriteIDs[processID] = nil
-                    completion?(succeeded)
-                }
-            }
-            self.pendingTasks[processID] = task
-            do {
-                try task.run()
-            } catch {
-                guard self.nativeWriteIDs[processID] == writeID,
-                      self.sessionIdentities[processID] == identity else { return }
-                self.pendingTasks[processID] = nil
-                let resolvedGain = VolumePolicy.resolvedNativeWriteGain(
-                    requestedGain: requestedValue,
-                    confirmedGain: confirmed,
-                    succeeded: false
-                )
-                self.applicationVolumes[processID] = resolvedGain
-                self.confirmedApplicationVolumes[processID] = resolvedGain
-                self.nativeWriteIDs[processID] = nil
-                completion?(false)
-            }
-        }
-        nativeWriteTasks[processID] = writeTask
     }
 
     func toggleMute(for app: AudioApplication) {
@@ -735,9 +550,6 @@ final class VolumeViewModel: ObservableObject {
 
     deinit {
         discoveryTask?.cancel()
-        volumeReadTasks.values.forEach { $0.cancel() }
-        nativeWriteTasks.values.forEach { $0.cancel() }
-        pendingTasks.values.forEach { $0.terminate() }
     }
 }
 
@@ -785,7 +597,7 @@ struct AppVolumeRow: View {
                     Text(app.name)
                         .lineLimit(1)
                     if app.controlKind == .processTap {
-                        Text("增益")
+                    Text("相对音量")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -817,14 +629,8 @@ struct AppVolumeRow: View {
                     }
                 )
                 .frame(width: 104, height: 20)
-                .help(
-                    app.controlKind == .processTap
-                        ? "控制该应用的系统级输出增益"
-                        : "拖到基准线前后 3% 会轻微吸附"
-                )
-                .accessibilityLabel(Text(
-                    app.controlKind == .processTap ? "\(app.name) 系统级输出增益" : "\(app.name) 音量"
-                ))
+                .help("相对原声：75% = 1 倍，100% ≈ 1.33 倍；增强可能产生失真")
+                .accessibilityLabel(Text("\(app.name) 系统级输出增益"))
                 .accessibilityValue(Text(model.volumeText(for: app)))
 
                 Text(model.volumeText(for: app))
@@ -841,11 +647,7 @@ struct AppVolumeRow: View {
                 .buttonStyle(.borderless)
                 .help(model.isMuted(app) ? "恢复 \(app.name) 音量" : "静音 \(app.name)")
                 .accessibilityLabel(Text(model.isMuted(app) ? "恢复 \(app.name) 音量" : "静音 \(app.name)"))
-                .accessibilityHint(Text(
-                    app.controlKind == .processTap
-                        ? "只影响这个应用当前 Process Tap 会话的输出增益"
-                        : "通过 AppleScript 修改这个应用自己的音量"
-                ))
+                .accessibilityHint(Text("只影响这个应用当前 Process Tap 会话的输出增益"))
             } else {
                 if app.controlKind == .processTap && !model.independentGainEnabled(for: app) {
                     Button(AudioApplicationStatus.enableProcessGainText) {
@@ -902,6 +704,7 @@ struct VolumePanelView: View {
 
             HStack {
                 Spacer()
+                Text(model.monitorMessage).font(.caption2).foregroundStyle(.secondary)
                 Button("退出") { NSApplication.shared.terminate(nil) }
             }
             .controlSize(.small)
@@ -1140,7 +943,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panelCoordinator: PanelCoordinator!
     private let model = VolumeViewModel()
-    private var refreshTimer: Timer?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var settingsWindowController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1159,22 +962,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 model: model,
                 onSettings: { [weak self] in self?.showSettings() }
             )),
-            onHide: { [weak self] in self?.stopRefreshTimer() }
+            onHide: {}
         )
         panelCoordinator.updateContentHeight(model.panelHeight)
+        model.onApplicationsChanged = { [weak self] in
+            guard let self else { return }
+            self.panelCoordinator.updateContentHeight(self.model.panelHeight)
+        }
+        model.startMonitoring()
 
         let center = NSWorkspace.shared.notificationCenter
         for name in [
             NSWorkspace.didLaunchApplicationNotification,
-            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didWakeNotification,
             NSWorkspace.didTerminateApplicationNotification
         ] {
-            _ = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+            workspaceObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self, self.panelCoordinator.isVisible else { return }
-                    self.model.refresh(readVolumes: false, forceDiscovery: true)
+                    guard let self else { return }
+                    self.model.refresh()
                 }
-            }
+            })
         }
     }
 
@@ -1182,6 +990,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 store: model.settingsStore,
+                permission: model.permissionController,
+                onRetry: { [weak model] in model?.retryAudioControl() },
                 onAutomaticAttachmentChange: { [weak model] value in
                     model?.setAutomaticallyAttachNewApps(value)
                 }
@@ -1195,31 +1005,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func togglePanel() {
         if panelCoordinator.isVisible {
             panelCoordinator.hide()
-            stopRefreshTimer()
         } else {
             panelCoordinator.updateContentHeight(model.panelHeight)
             panelCoordinator.show(anchorButton: statusItem.button, fallbackScreen: NSScreen.main)
-            model.refresh(readVolumes: true)
-            startRefreshTimer()
+            model.refresh()
         }
-    }
-
-    private func startRefreshTimer() {
-        stopRefreshTimer()
-        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.panelCoordinator.isVisible else { return }
-                self.model.refresh(readVolumes: false, forceDiscovery: true)
-                self.panelCoordinator.updateContentHeight(self.model.panelHeight)
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
-    }
-
-    private func stopRefreshTimer() {
-        refreshTimer?.invalidate()
-        refreshTimer = nil
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -1227,14 +1017,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !panelCoordinator.isVisible {
             panelCoordinator.updateContentHeight(model.panelHeight)
             panelCoordinator.show(anchorButton: statusItem.button, fallbackScreen: NSScreen.main)
-            model.refresh(readVolumes: true)
-            startRefreshTimer()
+            model.refresh()
         }
         return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        stopRefreshTimer()
+        model.stopMonitoring()
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
         panelCoordinator.hide()
         model.shutdownProcessTap()
     }
@@ -1242,6 +1033,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 let app = NSApplication.shared
+#if DEBUG
+if CommandLine.arguments.contains("--self-check") {
+    NSApp.setActivationPolicy(.accessory)
+    Task { @MainActor in
+        do { try await AppSelfChecks.run(); exit(0) }
+        catch { print("SELF_CHECK_FAILED: \(error)"); exit(1) }
+    }
+    app.run()
+    exit(0)
+}
+#endif
 let delegate = AppDelegate()
 app.delegate = delegate
 app.run()

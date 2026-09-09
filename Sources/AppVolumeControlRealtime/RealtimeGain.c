@@ -2,10 +2,12 @@
 
 #include <stdatomic.h>
 #include <string.h>
+#include <math.h>
 
 static float clamp_gain(float value) {
     if (value < 0.0f) return 0.0f;
-    if (value > 1.0f) return 1.0f;
+    if (!isfinite(value)) return 1.0f;
+    if (value > 4.0f / 3.0f) return 4.0f / 3.0f;
     return value;
 }
 
@@ -50,11 +52,13 @@ void avc_realtime_gain_process(
     float current = float_for_bits(
         atomic_load_explicit(&gain->currentBits, memory_order_relaxed)
     );
-    const float coefficient = clamp_gain(rampCoefficient);
+    const float coefficient = fminf(clamp_gain(rampCoefficient), 1.0f);
 
     for (size_t index = 0; index < count; index += 1) {
         current += (target - current) * coefficient;
-        output[index] = input[index] * current;
+        // 增强时限制峰值，避免超出有效样本范围。 / Bound boosted peaks to valid samples.
+        const float sample = input[index] * current;
+        output[index] = fminf(fmaxf(sample, -1.0f), 1.0f);
     }
 
     atomic_store_explicit(
